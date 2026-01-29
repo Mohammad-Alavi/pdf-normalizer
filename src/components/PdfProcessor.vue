@@ -245,7 +245,7 @@ const options = ref({
   ocr: true,
   standardize: true,
   compress: true,
-  pageSize: 'LETTER'
+  pageSize: 'ORIGINAL'
 })
 
 const pageSizes = [
@@ -258,7 +258,7 @@ const pageSizes = [
 // Google OAuth Config
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY || ''
-const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly'
+const SCOPES = 'https://www.googleapis.com/auth/drive'
 
 // Computed
 const canProcess = computed(() => {
@@ -366,6 +366,8 @@ async function authenticateGoogle() {
           return
         }
         accessToken.value = response.access_token
+        // Save token to sessionStorage for persistence
+        sessionStorage.setItem('google_access_token', response.access_token)
         isAuthenticated.value = true
         fetchUserInfo()
         isAuthenticating.value = false
@@ -408,11 +410,13 @@ async function fetchUserInfo() {
 }
 
 function signOut() {
+  const token = accessToken.value
   accessToken.value = ''
   isAuthenticated.value = false
   userEmail.value = ''
-  if (window.google?.accounts?.oauth2) {
-    google.accounts.oauth2.revoke(accessToken.value)
+  sessionStorage.removeItem('google_access_token')
+  if (window.google?.accounts?.oauth2 && token) {
+    google.accounts.oauth2.revoke(token)
   }
 }
 
@@ -498,14 +502,16 @@ async function processFiles() {
 
 async function fetchDriveFiles(folderId) {
   const response = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+mimeType='application/pdf'&fields=files(id,name,size)`,
+    `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+mimeType='application/pdf'&fields=files(id,name,size)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     {
       headers: { Authorization: `Bearer ${accessToken.value}` }
     }
   )
 
   if (!response.ok) {
-    throw new Error('Failed to fetch files from Google Drive. Make sure the folder is accessible.')
+    const errorData = await response.json().catch(() => ({}))
+    const errorMessage = errorData.error?.message || `API Error ${response.status}`
+    throw new Error(`Failed to fetch files: ${errorMessage}`)
   }
 
   const data = await response.json()
@@ -650,9 +656,24 @@ onMounted(async () => {
   // Check for existing token in session storage
   const savedToken = sessionStorage.getItem('google_access_token')
   if (savedToken) {
-    accessToken.value = savedToken
-    isAuthenticated.value = true
-    fetchUserInfo()
+    // Verify token is still valid
+    try {
+      const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${savedToken}` }
+      })
+      if (response.ok) {
+        const data = await response.json()
+        accessToken.value = savedToken
+        isAuthenticated.value = true
+        userEmail.value = data.email
+      } else {
+        // Token expired, clear it
+        sessionStorage.removeItem('google_access_token')
+      }
+    } catch (err) {
+      // Token invalid, clear it
+      sessionStorage.removeItem('google_access_token')
+    }
   }
 })
 </script>
