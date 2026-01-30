@@ -35,8 +35,8 @@
               <v-col cols="12" md="6">
                 <v-checkbox
                   v-model="options.ocr"
-                  label="OCR (Text Recognition)"
-                  hint="Extract text from scanned PDFs"
+                  label="Extract Text"
+                  hint="Extract text from PDFs (uses OCR for scanned docs). Saves as TXT and Excel."
                   persistent-hint
                   :disabled="isProcessing"
                 />
@@ -299,6 +299,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib'
 import JSZip from 'jszip'
 import Tesseract from 'tesseract.js'
 import * as pdfjsLib from 'pdfjs-dist'
+import * as XLSX from 'xlsx'
 
 // Configure PDF.js worker - use jsdelivr CDN
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
@@ -668,17 +669,30 @@ async function processFiles() {
         const uploadResult = await uploadToDrive(file.blob, file.name, normalizedFolderId)
         addLog('success', `Uploaded PDF to Drive: ${file.name}`, `File ID: ${uploadResult.id}`)
 
-        // If OCR was enabled and text was extracted, upload the text file too
+        // If text extraction was enabled and text was extracted, upload both TXT and XLSX files
         if (options.value.ocr && extractedText && extractedText.trim()) {
-          const textFilename = file.name.replace('.pdf', '_OCR.txt').replace('.PDF', '_OCR.txt')
+          const baseFilename = file.name.replace('.pdf', '').replace('.PDF', '')
+
+          // Upload TXT file
+          const textFilename = `${baseFilename}_text.txt`
           const textBlob = new Blob([extractedText], { type: 'text/plain;charset=utf-8' })
-          addLog('info', `Uploading OCR text: ${textFilename}`, `${extractedText.length} characters`)
+          addLog('info', `Uploading text file: ${textFilename}`, `${extractedText.length} characters`)
           try {
-            // Explicitly pass text/plain mimeType to ensure it's uploaded as a text file
             const textUploadResult = await uploadToDrive(textBlob, textFilename, normalizedFolderId, 'text/plain')
-            addLog('success', `Uploaded OCR text: ${textFilename}`, `File ID: ${textUploadResult.id}`)
+            addLog('success', `Uploaded text file: ${textFilename}`, `File ID: ${textUploadResult.id}`)
           } catch (textErr) {
-            addLog('warning', `Failed to upload OCR text for ${file.name}`, textErr.message)
+            addLog('warning', `Failed to upload text file for ${file.name}`, textErr.message)
+          }
+
+          // Upload XLSX file (Excel)
+          const xlsxFilename = `${baseFilename}_text.xlsx`
+          try {
+            const xlsxBlob = createExcelFromText(extractedText, file.name)
+            addLog('info', `Uploading Excel file: ${xlsxFilename}`)
+            const xlsxUploadResult = await uploadToDrive(xlsxBlob, xlsxFilename, normalizedFolderId, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            addLog('success', `Uploaded Excel file: ${xlsxFilename}`, `File ID: ${xlsxUploadResult.id}`)
+          } catch (xlsxErr) {
+            addLog('warning', `Failed to upload Excel file for ${file.name}`, xlsxErr.message)
           }
         }
 
@@ -857,71 +871,110 @@ async function processPdf(pdfBytes, filename, onOcrProgress = null) {
 
     const pages = pdfDoc.getPages()
 
-    // OCR: Extract text from scanned PDFs using Tesseract.js
+    // Text extraction: Try direct extraction first, fall back to OCR if needed
     if (options.value.ocr) {
       try {
-        addLog('info', `Running OCR on ${filename}...`, `${pages.length} page(s)`)
+        addLog('info', `Extracting text from ${filename}...`, `${pages.length} page(s)`)
 
-        // Load PDF with pdf.js to render pages as images
+        // Load PDF with pdf.js
         const loadingTask = pdfjsLib.getDocument({ data: pdfBytes })
         const pdfJsDoc = await loadingTask.promise
 
         const textParts = []
+        let totalDirectTextLength = 0
+
+        // STEP 1: Try direct text extraction first (for text-based PDFs)
+        addLog('info', 'Attempting direct text extraction...', filename)
 
         for (let i = 1; i <= pdfJsDoc.numPages; i++) {
           if (onOcrProgress) {
-            onOcrProgress(`OCR page ${i}/${pdfJsDoc.numPages}`)
+            onOcrProgress(`Extracting text from page ${i}/${pdfJsDoc.numPages}`)
           }
-          addLog('info', `OCR processing page ${i}/${pdfJsDoc.numPages}`, filename)
 
           const page = await pdfJsDoc.getPage(i)
-          const viewport = page.getViewport({ scale: 2.0 }) // Higher scale = better OCR quality
+          const textContent = await page.getTextContent()
 
-          // Create canvas to render PDF page
-          const canvas = document.createElement('canvas')
-          const context = canvas.getContext('2d')
-          canvas.height = viewport.height
-          canvas.width = viewport.width
+          // Extract text from the text content items
+          const pageText = textContent.items
+            .map(item => item.str)
+            .join(' ')
+            .trim()
 
-          await page.render({
-            canvasContext: context,
-            viewport: viewport
-          }).promise
-
-          // Convert canvas to image data URL
-          const imageDataUrl = canvas.toDataURL('image/png')
-
-          // Run Tesseract OCR on the image
-          // Support multiple languages: English + Persian (Farsi) + Arabic
-          const result = await Tesseract.recognize(
-            imageDataUrl,
-            'eng+fas+ara', // English + Persian (Farsi) + Arabic
-            {
-              logger: m => {
-                if (m.status === 'recognizing text' && m.progress) {
-                  // Could add progress updates here
-                }
-              }
-            }
-          )
-
-          if (result.data.text.trim()) {
-            textParts.push(`--- Page ${i} ---\n${result.data.text.trim()}`)
+          if (pageText) {
+            textParts.push(`--- Page ${i} ---\n${pageText}`)
+            totalDirectTextLength += pageText.length
           }
         }
 
-        extractedText = textParts.join('\n\n')
+        // Check if we got meaningful text (at least 50 chars per page on average)
+        const avgCharsPerPage = totalDirectTextLength / pdfJsDoc.numPages
+        const hasDirectText = avgCharsPerPage > 50
 
-        if (extractedText) {
-          addLog('success', `OCR complete for ${filename}`, `Extracted ${extractedText.length} characters`)
+        if (hasDirectText) {
+          // Direct extraction worked! No OCR needed
+          extractedText = textParts.join('\n\n')
+          addLog('success', `Direct text extraction complete for ${filename}`, `Extracted ${extractedText.length} characters (no OCR needed)`)
         } else {
-          addLog('warning', `OCR complete but no text found in ${filename}`)
+          // STEP 2: Fall back to OCR for scanned/image-based PDFs
+          addLog('info', `Little/no text found directly. Running OCR on ${filename}...`, `Found only ${totalDirectTextLength} chars`)
+
+          textParts.length = 0 // Clear the array for OCR results
+
+          for (let i = 1; i <= pdfJsDoc.numPages; i++) {
+            if (onOcrProgress) {
+              onOcrProgress(`OCR page ${i}/${pdfJsDoc.numPages}`)
+            }
+            addLog('info', `OCR processing page ${i}/${pdfJsDoc.numPages}`, filename)
+
+            const page = await pdfJsDoc.getPage(i)
+            const viewport = page.getViewport({ scale: 2.0 }) // Higher scale = better OCR quality
+
+            // Create canvas to render PDF page
+            const canvas = document.createElement('canvas')
+            const context = canvas.getContext('2d')
+            canvas.height = viewport.height
+            canvas.width = viewport.width
+
+            await page.render({
+              canvasContext: context,
+              viewport: viewport
+            }).promise
+
+            // Convert canvas to image data URL
+            const imageDataUrl = canvas.toDataURL('image/png')
+
+            // Run Tesseract OCR on the image
+            // Support multiple languages: English + Persian (Farsi) + Arabic
+            const result = await Tesseract.recognize(
+              imageDataUrl,
+              'eng+fas+ara', // English + Persian (Farsi) + Arabic
+              {
+                logger: m => {
+                  if (m.status === 'recognizing text' && m.progress) {
+                    // Could add progress updates here
+                  }
+                }
+              }
+            )
+
+            if (result.data.text.trim()) {
+              textParts.push(`--- Page ${i} ---\n${result.data.text.trim()}`)
+            }
+          }
+
+          extractedText = textParts.join('\n\n')
+
+          if (extractedText) {
+            addLog('success', `OCR complete for ${filename}`, `Extracted ${extractedText.length} characters`)
+          } else {
+            addLog('warning', `OCR complete but no text found in ${filename}`)
+          }
         }
 
-      } catch (ocrErr) {
-        console.error('OCR error:', ocrErr)
-        addLog('warning', `OCR failed for ${filename}`, ocrErr.message)
-        // Continue without OCR text
+      } catch (extractErr) {
+        console.error('Text extraction error:', extractErr)
+        addLog('warning', `Text extraction failed for ${filename}`, extractErr.message)
+        // Continue without extracted text
       }
     }
 
@@ -989,6 +1042,45 @@ function getPageDimensions(size) {
     default:
       return { width: 612, height: 792 }
   }
+}
+
+function createExcelFromText(extractedText, originalFilename) {
+  // Split text by page markers
+  const pages = extractedText.split(/---\s*Page\s+\d+\s*---/i).filter(p => p.trim())
+
+  // Create worksheet data
+  // Each row: [Page Number, Text Content]
+  const wsData = [
+    ['Source File', 'Page', 'Extracted Text'], // Header row
+  ]
+
+  pages.forEach((pageText, index) => {
+    wsData.push([originalFilename, index + 1, pageText.trim()])
+  })
+
+  // If no pages were parsed, just put all text in one row
+  if (pages.length === 0 && extractedText.trim()) {
+    wsData.push([originalFilename, 1, extractedText.trim()])
+  }
+
+  // Create workbook and worksheet
+  const wb = XLSX.utils.book_new()
+  const ws = XLSX.utils.aoa_to_sheet(wsData)
+
+  // Set column widths
+  ws['!cols'] = [
+    { wch: 40 },  // Source File
+    { wch: 8 },   // Page
+    { wch: 100 }, // Text
+  ]
+
+  // Add worksheet to workbook
+  XLSX.utils.book_append_sheet(wb, ws, 'Extracted Text')
+
+  // Generate Excel file as array buffer
+  const xlsxBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+
+  return new Blob([xlsxBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
 }
 
 async function uploadToDrive(blob, filename, parentFolderId, mimeType = null) {
