@@ -338,7 +338,7 @@ const pageSizes = [
 // Google OAuth Config
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY || ''
-const SCOPES = 'https://www.googleapis.com/auth/drive'
+const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile'
 
 // Computed
 const canProcess = computed(() => {
@@ -673,8 +673,8 @@ async function processFiles() {
         if (options.value.ocr && extractedText && extractedText.trim()) {
           const baseFilename = file.name.replace('.pdf', '').replace('.PDF', '')
 
-          // Upload TXT file
-          const textFilename = `${baseFilename}_text.txt`
+          // Upload TXT file (same name as PDF but with .txt extension)
+          const textFilename = `${baseFilename}.txt`
           const textBlob = new Blob([extractedText], { type: 'text/plain;charset=utf-8' })
           addLog('info', `Uploading text file: ${textFilename}`, `${extractedText.length} characters`)
           try {
@@ -684,8 +684,8 @@ async function processFiles() {
             addLog('warning', `Failed to upload text file for ${file.name}`, textErr.message)
           }
 
-          // Upload XLSX file (Excel)
-          const xlsxFilename = `${baseFilename}_text.xlsx`
+          // Upload XLSX file (same name as PDF but with .xlsx extension)
+          const xlsxFilename = `${baseFilename}.xlsx`
           try {
             const xlsxBlob = createExcelFromText(extractedText, file.name)
             addLog('info', `Uploading Excel file: ${xlsxFilename}`)
@@ -912,7 +912,7 @@ async function processPdf(pdfBytes, filename, onOcrProgress = null) {
 
         if (hasDirectText) {
           // Direct extraction worked! No OCR needed
-          extractedText = textParts.join('\n\n')
+          extractedText = normalizeArabicText(textParts.join('\n\n'))
           addLog('success', `Direct text extraction complete for ${filename}`, `Extracted ${extractedText.length} characters (no OCR needed)`)
         } else {
           // STEP 2: Fall back to OCR for scanned/image-based PDFs
@@ -962,7 +962,7 @@ async function processPdf(pdfBytes, filename, onOcrProgress = null) {
             }
           }
 
-          extractedText = textParts.join('\n\n')
+          extractedText = normalizeArabicText(textParts.join('\n\n'))
 
           if (extractedText) {
             addLog('success', `OCR complete for ${filename}`, `Extracted ${extractedText.length} characters`)
@@ -1042,6 +1042,23 @@ function getPageDimensions(size) {
     default:
       return { width: 612, height: 792 }
   }
+}
+
+// Normalize Arabic/Persian text by converting presentation forms to base characters
+function normalizeArabicText(text) {
+  if (!text) return text
+
+  // Apply NFKC normalization to convert Arabic Presentation Forms to base characters
+  let normalized = text.normalize('NFKC')
+
+  // Additional cleanup for common issues
+  // Remove zero-width characters that can cause display issues
+  normalized = normalized.replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, '')
+
+  // Normalize multiple spaces to single space
+  normalized = normalized.replace(/  +/g, ' ')
+
+  return normalized
 }
 
 function createExcelFromText(extractedText, originalFilename) {
