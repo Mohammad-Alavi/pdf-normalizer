@@ -366,8 +366,10 @@ async function authenticateGoogle() {
           return
         }
         accessToken.value = response.access_token
-        // Save token to sessionStorage for persistence
-        sessionStorage.setItem('google_access_token', response.access_token)
+        // Save token to localStorage for persistence across refreshes
+        localStorage.setItem('google_access_token', response.access_token)
+        // Also save the expiration time (Google tokens expire in ~1 hour)
+        localStorage.setItem('google_token_expiry', Date.now() + (response.expires_in * 1000))
         isAuthenticated.value = true
         fetchUserInfo()
         isAuthenticating.value = false
@@ -414,7 +416,8 @@ function signOut() {
   accessToken.value = ''
   isAuthenticated.value = false
   userEmail.value = ''
-  sessionStorage.removeItem('google_access_token')
+  localStorage.removeItem('google_access_token')
+  localStorage.removeItem('google_token_expiry')
   if (window.google?.accounts?.oauth2 && token) {
     google.accounts.oauth2.revoke(token)
   }
@@ -479,7 +482,7 @@ async function processFiles() {
         await uploadToDrive(file.blob, file.name, normalizedFolderId)
 
         file.status = 'done'
-        file.statusText = `Complete (${formatBytes(file.originalSize)} \u2192 ${formatBytes(file.processedSize)})`
+        file.statusText = `Complete (${formatBytes(file.originalSize)} → ${formatBytes(file.processedSize)})`
         processedFiles.value.push(file)
 
       } catch (err) {
@@ -751,10 +754,20 @@ async function downloadAll() {
 
 // Initialize
 onMounted(async () => {
-  // Check for existing token in session storage
-  const savedToken = sessionStorage.getItem('google_access_token')
+  // Check for existing token in localStorage
+  const savedToken = localStorage.getItem('google_access_token')
+  const tokenExpiry = localStorage.getItem('google_token_expiry')
+
   if (savedToken) {
-    // Verify token is still valid
+    // Check if token has expired locally first
+    if (tokenExpiry && Date.now() > parseInt(tokenExpiry)) {
+      // Token expired, clear it
+      localStorage.removeItem('google_access_token')
+      localStorage.removeItem('google_token_expiry')
+      return
+    }
+
+    // Verify token is still valid with Google
     try {
       const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
         headers: { Authorization: `Bearer ${savedToken}` }
@@ -765,12 +778,14 @@ onMounted(async () => {
         isAuthenticated.value = true
         userEmail.value = data.email
       } else {
-        // Token expired, clear it
-        sessionStorage.removeItem('google_access_token')
+        // Token invalid, clear it
+        localStorage.removeItem('google_access_token')
+        localStorage.removeItem('google_token_expiry')
       }
     } catch (err) {
-      // Token invalid, clear it
-      sessionStorage.removeItem('google_access_token')
+      // Token validation failed, clear it
+      localStorage.removeItem('google_access_token')
+      localStorage.removeItem('google_token_expiry')
     }
   }
 })
