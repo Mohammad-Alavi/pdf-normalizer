@@ -295,7 +295,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { PDFDocument } from 'pdf-lib'
 import JSZip from 'jszip'
 import Tesseract from 'tesseract.js'
 import * as pdfjsLib from 'pdfjs-dist'
@@ -337,7 +337,6 @@ const pageSizes = [
 
 // Google OAuth Config
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
-const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY || ''
 const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile'
 
 // Computed
@@ -488,25 +487,19 @@ async function authenticateGoogle() {
           isAuthenticating.value = false
           return
         }
-        console.log('OAuth callback received, token expires_in:', response.expires_in)
 
         accessToken.value = response.access_token
-        // Save token to localStorage for persistence across refreshes
         localStorage.setItem('google_access_token', response.access_token)
-        // Also save the expiration time (Google tokens expire in ~1 hour)
         const expiryTime = Date.now() + (response.expires_in * 1000)
         localStorage.setItem('google_token_expiry', String(expiryTime))
-        console.log('Token saved, expires at:', new Date(expiryTime).toISOString())
 
         isAuthenticated.value = true
 
-        // Fetch and save user info - await to ensure it completes
+        // Fetch and save user info
         try {
           await fetchUserInfo()
-          console.log('User email fetched:', userEmail.value)
           if (userEmail.value) {
             localStorage.setItem('google_user_email', userEmail.value)
-            console.log('Email saved to localStorage:', userEmail.value)
           }
         } catch (err) {
           console.error('Failed to fetch user info:', err)
@@ -541,28 +534,17 @@ function loadGoogleScript() {
 
 async function fetchUserInfo() {
   try {
-    console.log('=== Fetching user info ===')
-    console.log('Using access token (first 20 chars):', accessToken.value.substring(0, 20) + '...')
-
     const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${accessToken.value}` }
     })
 
-    console.log('User info response status:', response.status)
-
     if (!response.ok) {
-      const errorText = await response.text()
-      console.error('Failed to fetch user info, status:', response.status, 'error:', errorText)
+      console.error('Failed to fetch user info:', response.status)
       return null
     }
 
     const data = await response.json()
-    console.log('User info response data:', JSON.stringify(data))
-
-    const email = data.email || ''
-    userEmail.value = email
-    console.log('Set userEmail to:', email)
-
+    userEmail.value = data.email || ''
     return data
   } catch (err) {
     console.error('Failed to fetch user info:', err)
@@ -1099,36 +1081,20 @@ function parseInvoiceText(text) {
   }
 
   // 3. Extract buyer's نام شخص حقیقی / حقوقی
-  // This appears in the "مشخصات خریدار" section (buyer details)
-  // We need to find the نام شخص حقیقی / حقوقی that comes AFTER مشخصات خریدار
+  // There are TWO instances in the text: one after مشخصات فروشنده (seller) and one after مشخصات خریدار (buyer)
+  // We want the one from the buyer section (مشخصات خریدار)
   const buyerSectionStart = normalizedText.indexOf('مشخصات خریدار')
   if (buyerSectionStart !== -1) {
     const buyerSection = normalizedText.substring(buyerSectionStart)
-
-    // Try multiple patterns to extract buyer name - the slash and spacing can vary
-    const buyerNamePatterns = [
-      // Pattern 1: Standard format with various slash types
-      /نام شخص حقیقی\s*[\/\u002F\u2044\u2215]\s*حقوقی\s*:?\s*([^\n]+?)(?:\s*(?:فکس|تلفن|کد پستی|نشانی)|$)/,
-      // Pattern 2: Just look for "نام شخص" followed by content after colon
-      /نام شخص[^:]*:\s*([^\n]+?)(?:\s*(?:فکس|تلفن|کد پستی|نشانی)|$)/,
-      // Pattern 3: RTL format where value comes before label (value :label)
-      /([آ-ی\s\-\d]+?)\s*:\s*نام شخص حقیقی/,
-      // Pattern 4: Look for Persian name pattern after "حقوقی"
-      /حقوقی\s*:?\s*([آ-ی][آ-ی\s\-]+(?:\s*-\s*[آ-ی\s]+)?)/
-    ]
-
-    for (const pattern of buyerNamePatterns) {
-      const buyerNameMatch = buyerSection.match(pattern)
-      if (buyerNameMatch && buyerNameMatch[1]) {
-        let buyerName = buyerNameMatch[1].trim()
-        // Clean up - remove any trailing colons, separators, or field labels
-        buyerName = buyerName.replace(/[:\s،,]+$/, '').trim()
-        buyerName = buyerName.split(/\s*(?:فکس|تلفن|کد پستی|نشانی|کد اقتصادی|شماره ملی|شناسه)/)[0].trim()
-        // Skip if it's empty or just whitespace
-        if (buyerName && buyerName.length > 2) {
-          result.buyerName = buyerName
-          break
-        }
+    // Find "نام شخص حقیقی / حقوقی:" and extract the value after it
+    const labelIndex = buyerSection.indexOf('نام شخص حقیقی / حقوقی')
+    if (labelIndex !== -1) {
+      // Get text after the label
+      const afterLabel = buyerSection.substring(labelIndex + 'نام شخص حقیقی / حقوقی'.length)
+      // Skip any colons or spaces, then get the value until newline
+      const colonMatch = afterLabel.match(/^[:\s]*([^\n]+)/)
+      if (colonMatch && colonMatch[1]) {
+        result.buyerName = colonMatch[1].trim()
       }
     }
   }
@@ -1329,9 +1295,6 @@ async function uploadToDrive(blob, filename, parentFolderId, mimeType = null) {
   // Also add trashed=false to avoid finding trashed files
   const searchQuery = `'${parentFolderId}' in parents and name='${escapedFilename}' and trashed=false`
 
-  console.log('Checking for existing file with query:', searchQuery)
-  console.log('File mimeType:', fileMimeType)
-
   const searchResponse = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(searchQuery)}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     {
@@ -1342,16 +1305,13 @@ async function uploadToDrive(blob, filename, parentFolderId, mimeType = null) {
   let existingFileId = null
   if (searchResponse.ok) {
     const searchData = await searchResponse.json()
-    console.log('File search response:', searchData)
     if (searchData.files && searchData.files.length > 0) {
       existingFileId = searchData.files[0].id
-      console.log('Found existing file to update:', existingFileId)
     }
   }
 
   if (existingFileId) {
     // Update existing file
-    console.log('Updating existing file:', existingFileId)
     const form = new FormData()
     form.append('metadata', new Blob([JSON.stringify({ mimeType: fileMimeType })], { type: 'application/json' }))
     form.append('file', blob)
@@ -1367,16 +1327,12 @@ async function uploadToDrive(blob, filename, parentFolderId, mimeType = null) {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
-      console.error('Upload PATCH error:', errorData)
       throw new Error(errorData.error?.message || 'Failed to update file on Drive')
     }
 
-    const result = await response.json()
-    console.log('File updated successfully:', result)
-    return result
+    return await response.json()
   } else {
     // Create new file
-    console.log('Creating new file in folder:', parentFolderId)
     const metadata = {
       name: filename,
       parents: [parentFolderId],
@@ -1398,13 +1354,10 @@ async function uploadToDrive(blob, filename, parentFolderId, mimeType = null) {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
-      console.error('Upload POST error:', errorData)
       throw new Error(errorData.error?.message || 'Failed to upload file to Drive')
     }
 
-    const result = await response.json()
-    console.log('File created successfully:', result)
-    return result
+    return await response.json()
   }
 }
 
@@ -1440,82 +1393,46 @@ function clearAuthData() {
   localStorage.removeItem('google_user_email')
 }
 
-// Initialize
+// Initialize - restore auth from localStorage if valid
 onMounted(async () => {
-  console.log('=== PdfProcessor mounted, checking for saved auth ===')
-
-  // Check for existing token in localStorage
   const savedToken = localStorage.getItem('google_access_token')
   const tokenExpiry = localStorage.getItem('google_token_expiry')
   const savedEmail = localStorage.getItem('google_user_email')
 
-  console.log('Saved token exists:', !!savedToken)
-  console.log('Saved token (first 20 chars):', savedToken ? savedToken.substring(0, 20) + '...' : 'none')
-  console.log('Saved email:', savedEmail)
-  console.log('Token expiry:', tokenExpiry ? new Date(parseInt(tokenExpiry)).toISOString() : 'not set')
-  console.log('Current time:', new Date().toISOString())
-  console.log('Time until expiry:', tokenExpiry ? `${Math.round((parseInt(tokenExpiry) - Date.now()) / 1000 / 60)} minutes` : 'N/A')
+  if (!savedToken) return
 
-  if (!savedToken) {
-    console.log('No saved token found, user needs to sign in')
-    return
-  }
-
-  // Check if token has expired locally first
+  // Check if token has expired locally
   if (tokenExpiry && Date.now() > parseInt(tokenExpiry)) {
-    console.log('Token expired locally, clearing auth data...')
     clearAuthData()
     return
   }
 
-  // Token exists and hasn't expired locally - verify with Google
-  console.log('Verifying token with Google API...')
-
+  // Verify token with Google
   try {
     const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${savedToken}` }
     })
 
-    console.log('Google API response status:', response.status)
-
     if (response.ok) {
       const data = await response.json()
-      console.log('Token VALID! User data:', JSON.stringify(data))
-
-      // Token is valid - set all auth state
       accessToken.value = savedToken
       isAuthenticated.value = true
+      userEmail.value = data.email || savedEmail || ''
 
-      // Use email from API response, fallback to saved email
-      const email = data.email || savedEmail || ''
-      userEmail.value = email
-      console.log('Setting userEmail to:', email)
-
-      // Update saved email if we got a fresh one from API
+      // Update saved email if we got a fresh one
       if (data.email && data.email !== savedEmail) {
         localStorage.setItem('google_user_email', data.email)
-        console.log('Updated saved email to:', data.email)
       }
-
-      console.log('=== Auth restored successfully ===')
-      console.log('isAuthenticated:', isAuthenticated.value)
-      console.log('userEmail:', userEmail.value)
     } else {
-      // Token is invalid
-      const errorText = await response.text()
-      console.log('Token INVALID! Status:', response.status, 'Error:', errorText)
       clearAuthData()
     }
   } catch (err) {
-    // Network or other error
-    console.error('Token validation network error:', err)
-    // Don't clear auth on network errors - might be temporary
-    // But still set state from localStorage for offline-ish UX
+    console.error('Token validation error:', err)
+    // On network error, use cached auth data if available
     if (savedEmail) {
       userEmail.value = savedEmail
       accessToken.value = savedToken
       isAuthenticated.value = true
-      console.log('Network error but using cached auth data')
     } else {
       clearAuthData()
     }
