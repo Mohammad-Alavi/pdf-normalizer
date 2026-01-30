@@ -597,12 +597,12 @@ async function processFiles() {
 
     // Get or create the "Normalized" subfolder
     addLog('info', 'Checking for Normalized folder...')
-    const { folderId: normalizedFolderId, created } = await getOrCreateNormalizedFolder(folderId)
+    const { folderId: normalizedFolderId, textsFolderId, sheetsFolderId, created } = await getOrCreateNormalizedFolder(folderId)
 
     if (created) {
-      addLog('success', 'Created new Normalized folder', `Folder ID: ${normalizedFolderId}`)
+      addLog('success', 'Created new Normalized folder structure', `Main: ${normalizedFolderId}, Texts: ${textsFolderId}, Sheets: ${sheetsFolderId}`)
     } else {
-      addLog('success', 'Found existing Normalized folder', `Folder ID: ${normalizedFolderId}`)
+      addLog('success', 'Found existing Normalized folder structure', `Main: ${normalizedFolderId}, Texts: ${textsFolderId}, Sheets: ${sheetsFolderId}`)
     }
 
     // Set the link to open the folder
@@ -673,24 +673,24 @@ async function processFiles() {
         if (options.value.ocr && extractedText && extractedText.trim()) {
           const baseFilename = file.name.replace('.pdf', '').replace('.PDF', '')
 
-          // Upload TXT file (same name as PDF but with .txt extension)
+          // Upload TXT file to Texts subfolder
           const textFilename = `${baseFilename}.txt`
           const textBlob = new Blob([extractedText], { type: 'text/plain;charset=utf-8' })
           addLog('info', `Uploading text file: ${textFilename}`, `${extractedText.length} characters`)
           try {
-            const textUploadResult = await uploadToDrive(textBlob, textFilename, normalizedFolderId, 'text/plain')
-            addLog('success', `Uploaded text file: ${textFilename}`, `File ID: ${textUploadResult.id}`)
+            const textUploadResult = await uploadToDrive(textBlob, textFilename, textsFolderId, 'text/plain')
+            addLog('success', `Uploaded text file to Texts folder: ${textFilename}`, `File ID: ${textUploadResult.id}`)
           } catch (textErr) {
             addLog('warning', `Failed to upload text file for ${file.name}`, textErr.message)
           }
 
-          // Upload XLSX file (same name as PDF but with .xlsx extension)
+          // Upload XLSX file to Sheets subfolder
           const xlsxFilename = `${baseFilename}.xlsx`
           try {
             const xlsxBlob = createExcelFromText(extractedText, file.name)
             addLog('info', `Uploading Excel file: ${xlsxFilename}`)
-            const xlsxUploadResult = await uploadToDrive(xlsxBlob, xlsxFilename, normalizedFolderId, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-            addLog('success', `Uploaded Excel file: ${xlsxFilename}`, `File ID: ${xlsxUploadResult.id}`)
+            const xlsxUploadResult = await uploadToDrive(xlsxBlob, xlsxFilename, sheetsFolderId, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            addLog('success', `Uploaded Excel file to Sheets folder: ${xlsxFilename}`, `File ID: ${xlsxUploadResult.id}`)
           } catch (xlsxErr) {
             addLog('warning', `Failed to upload Excel file for ${file.name}`, xlsxErr.message)
           }
@@ -780,12 +780,9 @@ async function fetchDriveFiles(folderId, normalizedFolderId = null) {
   })
 }
 
-async function getOrCreateNormalizedFolder(parentFolderId) {
-  // First, check if "Normalized" folder already exists in the parent folder
-  // IMPORTANT: Add trashed=false to avoid finding trashed folders
-  const folderQuery = `'${parentFolderId}' in parents and name='Normalized' and mimeType='application/vnd.google-apps.folder' and trashed=false`
-
-  console.log('Searching for Normalized folder with query:', folderQuery)
+// Helper function to get or create a folder by name within a parent folder
+async function getOrCreateFolder(parentFolderId, folderName) {
+  const folderQuery = `'${parentFolderId}' in parents and name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
 
   const searchResponse = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=files(id,name,parents)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
@@ -796,27 +793,15 @@ async function getOrCreateNormalizedFolder(parentFolderId) {
 
   if (searchResponse.ok) {
     const searchData = await searchResponse.json()
-    console.log('Folder search response:', searchData)
-
     if (searchData.files && searchData.files.length > 0) {
       const foundFolder = searchData.files[0]
-      console.log('Found existing Normalized folder:', foundFolder)
-
-      // Verify the folder is actually in the correct parent
       if (foundFolder.parents && foundFolder.parents.includes(parentFolderId)) {
         return { folderId: foundFolder.id, created: false }
-      } else {
-        console.warn('Found folder but parent mismatch, creating new one')
       }
     }
-  } else {
-    const errorData = await searchResponse.json().catch(() => ({}))
-    console.error('Folder search failed:', errorData)
   }
 
   // Folder doesn't exist, create it
-  console.log('Creating new Normalized folder in parent:', parentFolderId)
-
   const createResponse = await fetch(
     'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true',
     {
@@ -826,7 +811,7 @@ async function getOrCreateNormalizedFolder(parentFolderId) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        name: 'Normalized',
+        name: folderName,
         mimeType: 'application/vnd.google-apps.folder',
         parents: [parentFolderId]
       })
@@ -835,13 +820,30 @@ async function getOrCreateNormalizedFolder(parentFolderId) {
 
   if (!createResponse.ok) {
     const errorData = await createResponse.json().catch(() => ({}))
-    console.error('Folder creation failed:', errorData)
-    throw new Error(`Failed to create Normalized folder: ${errorData.error?.message || 'Unknown error'}`)
+    throw new Error(`Failed to create ${folderName} folder: ${errorData.error?.message || 'Unknown error'}`)
   }
 
   const createData = await createResponse.json()
-  console.log('Created new Normalized folder:', createData)
   return { folderId: createData.id, created: true }
+}
+
+async function getOrCreateNormalizedFolder(parentFolderId) {
+  // Get or create main Normalized folder
+  const normalizedResult = await getOrCreateFolder(parentFolderId, 'Normalized')
+  const normalizedFolderId = normalizedResult.folderId
+
+  // Get or create Texts subfolder
+  const textsResult = await getOrCreateFolder(normalizedFolderId, 'Texts')
+
+  // Get or create Sheets subfolder
+  const sheetsResult = await getOrCreateFolder(normalizedFolderId, 'Sheets')
+
+  return {
+    folderId: normalizedFolderId,
+    textsFolderId: textsResult.folderId,
+    sheetsFolderId: sheetsResult.folderId,
+    created: normalizedResult.created
+  }
 }
 
 async function downloadFile(fileId) {
@@ -1061,38 +1063,214 @@ function normalizeArabicText(text) {
   return normalized
 }
 
-function createExcelFromText(extractedText, originalFilename) {
-  // Split text by page markers
-  const pages = extractedText.split(/---\s*Page\s+\d+\s*---/i).filter(p => p.trim())
+// Persian invoice field definitions for parsing
+const INVOICE_FIELDS = [
+  // Header fields
+  { key: 'invoiceNumber', labels: ['شماره فاکتور', 'شماره صورتحساب', 'شماره سریال'] },
+  { key: 'date', labels: ['تاریخ', 'تاریخ صدور', 'تاریخ فاکتور'] },
+  { key: 'buyerName', labels: ['نام خریدار', 'خریدار', 'نام مشتری', 'مشتری'] },
+  { key: 'buyerAddress', labels: ['آدرس خریدار', 'آدرس', 'نشانی'] },
+  { key: 'buyerPhone', labels: ['تلفن خریدار', 'تلفن', 'شماره تماس'] },
+  { key: 'buyerNationalId', labels: ['کد ملی', 'شناسه ملی', 'کد اقتصادی'] },
+  { key: 'sellerName', labels: ['نام فروشنده', 'فروشنده'] },
+  { key: 'sellerAddress', labels: ['آدرس فروشنده'] },
 
-  // Create worksheet data
-  // Each row: [Page Number, Text Content]
-  const wsData = [
-    ['Source File', 'Page', 'Extracted Text'], // Header row
+  // Item fields
+  { key: 'itemDescription', labels: ['شرح کالا یا خدمات', 'شرح کالا', 'شرح خدمات', 'نام کالا', 'کالا'] },
+  { key: 'quantity', labels: ['تعداد', 'مقدار'] },
+  { key: 'unitPrice', labels: ['مبلغ واحد', 'قیمت واحد', 'فی'] },
+  { key: 'unit', labels: ['واحد'] },
+  { key: 'discount', labels: ['تخفیف'] },
+  { key: 'tax', labels: ['مالیات', 'مالیات بر ارزش افزوده', 'ارزش افزوده'] },
+
+  // Total fields
+  { key: 'subtotal', labels: ['جمع کل', 'جمع مبلغ', 'مبلغ کل قبل از تخفیف'] },
+  { key: 'totalDiscount', labels: ['جمع تخفیف', 'کل تخفیف'] },
+  { key: 'totalTax', labels: ['جمع مالیات', 'کل مالیات'] },
+  { key: 'totalAmount', labels: ['مبلغ قابل پرداخت', 'مبلغ نهایی', 'جمع کل قابل پرداخت', 'مبلغ کل'] },
+]
+
+// Parse Persian invoice text and extract structured data
+function parseInvoiceText(text) {
+  if (!text) return null
+
+  const result = {
+    // Header info
+    invoiceNumber: '',
+    date: '',
+    buyerName: '',
+    buyerAddress: '',
+    buyerPhone: '',
+    buyerNationalId: '',
+    sellerName: '',
+    sellerAddress: '',
+
+    // Items (array for multiple line items)
+    items: [],
+
+    // Totals
+    subtotal: '',
+    totalDiscount: '',
+    totalTax: '',
+    totalAmount: '',
+
+    // Raw text for reference
+    rawText: text
+  }
+
+  // Normalize text first
+  const normalizedText = normalizeArabicText(text)
+
+  // Split into lines for processing
+  const lines = normalizedText.split('\n').map(l => l.trim()).filter(l => l)
+
+  // Extract field values using pattern matching
+  for (const field of INVOICE_FIELDS) {
+    for (const label of field.labels) {
+      // Pattern: "label: value" or "label value" with various separators
+      const patterns = [
+        new RegExp(`${label}[:\\s]+([^\\n]+)`, 'i'),
+        new RegExp(`${label}([^\\n]+)`, 'i')
+      ]
+
+      for (const pattern of patterns) {
+        const match = normalizedText.match(pattern)
+        if (match && match[1]) {
+          let value = match[1].trim()
+          // Clean up common separators at the start
+          value = value.replace(/^[:\s،,]+/, '').trim()
+          // Don't overwrite if already has a value
+          if (!result[field.key] || result[field.key] === '') {
+            result[field.key] = value
+            break
+          }
+        }
+      }
+    }
+  }
+
+  // Try to extract line items (items in a table format)
+  // Look for patterns like: description | quantity | unit price | amount
+  const itemPattern = /(.+?)\s+(\d+)\s+(\d[\d,]*)\s+(\d[\d,]*)/g
+  let itemMatch
+  while ((itemMatch = itemPattern.exec(normalizedText)) !== null) {
+    // Validate this looks like an item row (not a header)
+    const desc = itemMatch[1].trim()
+    if (desc.length > 2 && !desc.includes('شرح') && !desc.includes('تعداد')) {
+      result.items.push({
+        description: desc,
+        quantity: itemMatch[2],
+        unitPrice: itemMatch[3].replace(/,/g, ''),
+        amount: itemMatch[4].replace(/,/g, '')
+      })
+    }
+  }
+
+  // If no items found via pattern, use the itemDescription field
+  if (result.items.length === 0 && result.itemDescription) {
+    result.items.push({
+      description: result.itemDescription,
+      quantity: result.quantity || '',
+      unitPrice: result.unitPrice || '',
+      amount: result.totalAmount || ''
+    })
+  }
+
+  return result
+}
+
+function createExcelFromText(extractedText, originalFilename) {
+  // Create workbook
+  const wb = XLSX.utils.book_new()
+
+  // Try to parse as invoice first
+  const invoiceData = parseInvoiceText(extractedText)
+
+  // Sheet 1: Invoice Summary (structured data)
+  const summaryData = [
+    ['فایل مبدا / Source File', originalFilename],
+    [''],
+    ['اطلاعات فاکتور / Invoice Information'],
+    ['شماره فاکتور / Invoice Number', invoiceData?.invoiceNumber || ''],
+    ['تاریخ / Date', invoiceData?.date || ''],
+    [''],
+    ['اطلاعات خریدار / Buyer Information'],
+    ['نام خریدار / Buyer Name', invoiceData?.buyerName || ''],
+    ['آدرس / Address', invoiceData?.buyerAddress || ''],
+    ['تلفن / Phone', invoiceData?.buyerPhone || ''],
+    ['کد ملی / National ID', invoiceData?.buyerNationalId || ''],
+    [''],
+    ['اطلاعات فروشنده / Seller Information'],
+    ['نام فروشنده / Seller Name', invoiceData?.sellerName || ''],
+    ['آدرس فروشنده / Seller Address', invoiceData?.sellerAddress || ''],
+    [''],
+    ['جمع‌بندی / Totals'],
+    ['جمع کل / Subtotal', invoiceData?.subtotal || ''],
+    ['تخفیف / Discount', invoiceData?.totalDiscount || ''],
+    ['مالیات / Tax', invoiceData?.totalTax || ''],
+    ['مبلغ قابل پرداخت / Total Amount', invoiceData?.totalAmount || ''],
+  ]
+
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryData)
+  wsSummary['!cols'] = [
+    { wch: 35 },  // Labels
+    { wch: 50 },  // Values
+  ]
+  // Set RTL direction for the sheet
+  wsSummary['!dir'] = 'rtl'
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Invoice Summary')
+
+  // Sheet 2: Line Items (if any)
+  if (invoiceData?.items && invoiceData.items.length > 0) {
+    const itemsData = [
+      ['ردیف', 'شرح کالا/خدمات', 'تعداد', 'مبلغ واحد', 'مبلغ کل'],
+      ['Row', 'Description', 'Quantity', 'Unit Price', 'Total'],
+    ]
+
+    invoiceData.items.forEach((item, index) => {
+      itemsData.push([
+        index + 1,
+        item.description || '',
+        item.quantity || '',
+        item.unitPrice || '',
+        item.amount || ''
+      ])
+    })
+
+    const wsItems = XLSX.utils.aoa_to_sheet(itemsData)
+    wsItems['!cols'] = [
+      { wch: 8 },   // Row number
+      { wch: 50 },  // Description
+      { wch: 12 },  // Quantity
+      { wch: 15 },  // Unit Price
+      { wch: 15 },  // Total
+    ]
+    wsItems['!dir'] = 'rtl'
+    XLSX.utils.book_append_sheet(wb, wsItems, 'Line Items')
+  }
+
+  // Sheet 3: Raw Text (for reference)
+  const pages = extractedText.split(/---\s*Page\s+\d+\s*---/i).filter(p => p.trim())
+  const rawTextData = [
+    ['Source File', 'Page', 'Extracted Text'],
   ]
 
   pages.forEach((pageText, index) => {
-    wsData.push([originalFilename, index + 1, pageText.trim()])
+    rawTextData.push([originalFilename, index + 1, pageText.trim()])
   })
 
   // If no pages were parsed, just put all text in one row
   if (pages.length === 0 && extractedText.trim()) {
-    wsData.push([originalFilename, 1, extractedText.trim()])
+    rawTextData.push([originalFilename, 1, extractedText.trim()])
   }
 
-  // Create workbook and worksheet
-  const wb = XLSX.utils.book_new()
-  const ws = XLSX.utils.aoa_to_sheet(wsData)
-
-  // Set column widths
-  ws['!cols'] = [
+  const wsRaw = XLSX.utils.aoa_to_sheet(rawTextData)
+  wsRaw['!cols'] = [
     { wch: 40 },  // Source File
     { wch: 8 },   // Page
     { wch: 100 }, // Text
   ]
-
-  // Add worksheet to workbook
-  XLSX.utils.book_append_sheet(wb, ws, 'Extracted Text')
+  XLSX.utils.book_append_sheet(wb, wsRaw, 'Raw Text')
 
   // Generate Excel file as array buffer
   const xlsxBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
