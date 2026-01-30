@@ -300,8 +300,8 @@ import JSZip from 'jszip'
 import Tesseract from 'tesseract.js'
 import * as pdfjsLib from 'pdfjs-dist'
 
-// Configure PDF.js worker - use unpkg which mirrors npm packages directly
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
+// Configure PDF.js worker - use jsdelivr CDN
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
 
 // State
 const driveLink = ref('')
@@ -671,10 +671,11 @@ async function processFiles() {
         // If OCR was enabled and text was extracted, upload the text file too
         if (options.value.ocr && extractedText && extractedText.trim()) {
           const textFilename = file.name.replace('.pdf', '_OCR.txt').replace('.PDF', '_OCR.txt')
-          const textBlob = new Blob([extractedText], { type: 'text/plain' })
+          const textBlob = new Blob([extractedText], { type: 'text/plain;charset=utf-8' })
           addLog('info', `Uploading OCR text: ${textFilename}`, `${extractedText.length} characters`)
           try {
-            const textUploadResult = await uploadToDrive(textBlob, textFilename, normalizedFolderId)
+            // Explicitly pass text/plain mimeType to ensure it's uploaded as a text file
+            const textUploadResult = await uploadToDrive(textBlob, textFilename, normalizedFolderId, 'text/plain')
             addLog('success', `Uploaded OCR text: ${textFilename}`, `File ID: ${textUploadResult.id}`)
           } catch (textErr) {
             addLog('warning', `Failed to upload OCR text for ${file.name}`, textErr.message)
@@ -891,9 +892,10 @@ async function processPdf(pdfBytes, filename, onOcrProgress = null) {
           const imageDataUrl = canvas.toDataURL('image/png')
 
           // Run Tesseract OCR on the image
+          // Support multiple languages: English + Persian (Farsi) + Arabic
           const result = await Tesseract.recognize(
             imageDataUrl,
-            'eng', // Language
+            'eng+fas+ara', // English + Persian (Farsi) + Arabic
             {
               logger: m => {
                 if (m.status === 'recognizing text' && m.progress) {
@@ -989,7 +991,10 @@ function getPageDimensions(size) {
   }
 }
 
-async function uploadToDrive(blob, filename, parentFolderId) {
+async function uploadToDrive(blob, filename, parentFolderId, mimeType = null) {
+  // Use blob's type if mimeType not provided, fallback to application/pdf
+  const fileMimeType = mimeType || blob.type || 'application/pdf'
+
   // First, check if file already exists in the folder
   const escapedFilename = filename.replace(/'/g, "\\'")
   // Use spaces in query (they get encoded properly by encodeURIComponent), not + signs
@@ -997,6 +1002,7 @@ async function uploadToDrive(blob, filename, parentFolderId) {
   const searchQuery = `'${parentFolderId}' in parents and name='${escapedFilename}' and trashed=false`
 
   console.log('Checking for existing file with query:', searchQuery)
+  console.log('File mimeType:', fileMimeType)
 
   const searchResponse = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(searchQuery)}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
@@ -1019,7 +1025,7 @@ async function uploadToDrive(blob, filename, parentFolderId) {
     // Update existing file
     console.log('Updating existing file:', existingFileId)
     const form = new FormData()
-    form.append('metadata', new Blob([JSON.stringify({ mimeType: 'application/pdf' })], { type: 'application/json' }))
+    form.append('metadata', new Blob([JSON.stringify({ mimeType: fileMimeType })], { type: 'application/json' }))
     form.append('file', blob)
 
     const response = await fetch(
@@ -1046,7 +1052,7 @@ async function uploadToDrive(blob, filename, parentFolderId) {
     const metadata = {
       name: filename,
       parents: [parentFolderId],
-      mimeType: 'application/pdf'
+      mimeType: fileMimeType
     }
 
     const form = new FormData()
