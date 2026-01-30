@@ -119,7 +119,7 @@
       </v-alert>
 
       <!-- Action Buttons -->
-      <div class="d-flex gap-3 mb-4">
+      <div class="d-flex mb-4" style="gap: 16px;">
         <v-btn
           color="primary"
           size="large"
@@ -184,10 +184,10 @@
                 <v-chip
                   v-if="file.originalSize && file.processedSize"
                   size="x-small"
-                  color="success"
+                  :color="getSizeChange(file.originalSize, file.processedSize).color"
                   variant="flat"
                 >
-                  {{ getSizeReduction(file.originalSize, file.processedSize) }}
+                  {{ getSizeChange(file.originalSize, file.processedSize).text }}
                 </v-chip>
               </template>
             </v-list-item>
@@ -217,6 +217,52 @@
       >
         {{ successMessage }}
       </v-alert>
+
+      <!-- Processing Logs -->
+      <v-expansion-panels v-if="processingLogs.length > 0" class="mb-4">
+        <v-expansion-panel>
+          <v-expansion-panel-title>
+            <v-icon class="mr-2">mdi-text-box-outline</v-icon>
+            Processing Logs ({{ processingLogs.length }} entries)
+          </v-expansion-panel-title>
+          <v-expansion-panel-text>
+            <div class="logs-container" style="max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px;">
+              <div
+                v-for="log in processingLogs"
+                :key="log.id"
+                class="log-entry py-1"
+                :class="{
+                  'text-success': log.type === 'success',
+                  'text-error': log.type === 'error',
+                  'text-warning': log.type === 'warning',
+                  'text-info': log.type === 'info'
+                }"
+              >
+                <span class="text-grey-darken-1">[{{ log.timestamp }}]</span>
+                <v-icon
+                  size="x-small"
+                  class="mx-1"
+                  :color="log.type === 'success' ? 'success' : log.type === 'error' ? 'error' : log.type === 'warning' ? 'warning' : 'info'"
+                >
+                  {{ log.type === 'success' ? 'mdi-check-circle' : log.type === 'error' ? 'mdi-alert-circle' : log.type === 'warning' ? 'mdi-alert' : 'mdi-information' }}
+                </v-icon>
+                <span>{{ log.message }}</span>
+                <span v-if="log.details" class="text-grey-darken-1 ml-2">\u2014 {{ log.details }}</span>
+              </div>
+            </div>
+            <v-btn
+              variant="text"
+              size="small"
+              color="error"
+              class="mt-2"
+              @click="clearLogs"
+            >
+              <v-icon size="small" class="mr-1">mdi-delete</v-icon>
+              Clear Logs
+            </v-btn>
+          </v-expansion-panel-text>
+        </v-expansion-panel>
+      </v-expansion-panels>
     </v-card-text>
   </v-card>
 </template>
@@ -239,6 +285,7 @@ const files = ref([])
 const processedFiles = ref([])
 const error = ref('')
 const successMessage = ref('')
+const processingLogs = ref([])
 
 // Options
 const options = ref({
@@ -331,9 +378,15 @@ function getFileStatusColor(status) {
   }
 }
 
-function getSizeReduction(original, processed) {
-  const reduction = ((original - processed) / original * 100).toFixed(0)
-  return reduction > 0 ? `-${reduction}%` : `+${Math.abs(reduction)}%`
+function getSizeChange(original, processed) {
+  const change = ((original - processed) / original * 100).toFixed(0)
+  if (change > 0) {
+    return { text: `Saved ${change}%`, color: 'success' }
+  } else if (change < 0) {
+    return { text: `+${Math.abs(change)}%`, color: 'warning' }
+  } else {
+    return { text: 'No change', color: 'grey' }
+  }
 }
 
 function formatBytes(bytes) {
@@ -342,6 +395,21 @@ function formatBytes(bytes) {
   const sizes = ['B', 'KB', 'MB', 'GB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+function addLog(type, message, details = null) {
+  const timestamp = new Date().toLocaleTimeString()
+  processingLogs.value.push({
+    id: Date.now(),
+    timestamp,
+    type, // 'info', 'success', 'warning', 'error'
+    message,
+    details
+  })
+}
+
+function clearLogs() {
+  processingLogs.value = []
 }
 
 // Google OAuth
@@ -437,18 +505,25 @@ async function processFiles() {
   files.value = []
   processedFiles.value = []
   progress.value = 0
+  clearLogs()
 
   try {
     const folderId = extractFolderId(driveLink.value)
+    addLog('info', 'Starting PDF processing', `Folder ID: ${folderId}`)
 
     // Get or create the "Normalized" subfolder
+    addLog('info', 'Checking for Normalized folder...')
     const normalizedFolderId = await getOrCreateNormalizedFolder(folderId)
+    addLog('success', 'Normalized folder ready', `Folder ID: ${normalizedFolderId}`)
 
     // Fetch files from Google Drive (excluding files already in Normalized folder)
+    addLog('info', 'Fetching PDF files from Google Drive...')
     const pdfFiles = await fetchDriveFiles(folderId, normalizedFolderId)
+    addLog('info', `Found ${pdfFiles.length} PDF file(s) to process`, pdfFiles.map(f => f.name).join(', '))
 
     if (pdfFiles.length === 0) {
       error.value = 'No PDF files found in the specified folder'
+      addLog('warning', 'No PDF files found in the folder')
       isProcessing.value = false
       return
     }
@@ -466,24 +541,35 @@ async function processFiles() {
     // Process each file
     for (let i = 0; i < files.value.length; i++) {
       const file = files.value[i]
+      addLog('info', `Processing file ${i + 1}/${files.value.length}: ${file.name}`)
+
       try {
         // Download
         file.status = 'downloading'
         file.statusText = 'Downloading...'
+        addLog('info', `Downloading: ${file.name}`)
         const pdfBytes = await downloadFile(file.id)
         file.originalSize = pdfBytes.byteLength
+        addLog('success', `Downloaded: ${file.name}`, `Size: ${formatBytes(file.originalSize)}`)
 
         // Process
         file.status = 'processing'
         file.statusText = 'Processing...'
+        addLog('info', `Processing PDF: ${file.name}`, `Options: OCR=${options.value.ocr}, Standardize=${options.value.standardize}, Compress=${options.value.compress}, PageSize=${options.value.pageSize}`)
         const processedBytes = await processPdf(pdfBytes, file.name)
         file.processedSize = processedBytes.byteLength
         file.blob = new Blob([processedBytes], { type: 'application/pdf' })
 
+        const sizeChange = file.originalSize - file.processedSize
+        const sizeChangeText = sizeChange > 0 ? `Reduced by ${formatBytes(sizeChange)}` : sizeChange < 0 ? `Increased by ${formatBytes(Math.abs(sizeChange))}` : 'No size change'
+        addLog('success', `Processed: ${file.name}`, `${formatBytes(file.originalSize)} \u2192 ${formatBytes(file.processedSize)} (${sizeChangeText})`)
+
         // Upload back to Drive (to Normalized folder)
         file.status = 'uploading'
         file.statusText = 'Uploading to Drive...'
+        addLog('info', `Uploading to Drive: ${file.name}`)
         await uploadToDrive(file.blob, file.name, normalizedFolderId)
+        addLog('success', `Uploaded to Drive: ${file.name}`)
 
         file.status = 'done'
         file.statusText = `Complete (${formatBytes(file.originalSize)} \u2192 ${formatBytes(file.processedSize)})`
@@ -492,6 +578,7 @@ async function processFiles() {
       } catch (err) {
         file.status = 'error'
         file.statusText = err.message || 'Processing failed'
+        addLog('error', `Failed to process: ${file.name}`, err.message || 'Unknown error')
         console.error(`Error processing ${file.name}:`, err)
       }
 
@@ -499,12 +586,18 @@ async function processFiles() {
     }
 
     const successCount = files.value.filter(f => f.status === 'done').length
+    const errorCount = files.value.filter(f => f.status === 'error').length
+
     if (successCount > 0) {
       successMessage.value = `Successfully processed ${successCount} files and uploaded to Google Drive!`
+      addLog('success', `Processing complete: ${successCount} succeeded, ${errorCount} failed`)
+    } else {
+      addLog('warning', 'No files were successfully processed')
     }
 
   } catch (err) {
     error.value = err.message || 'An error occurred while processing files'
+    addLog('error', 'Processing failed', err.message || 'Unknown error')
   } finally {
     isProcessing.value = false
   }
