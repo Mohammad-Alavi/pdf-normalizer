@@ -102,11 +102,11 @@
         type="success"
         variant="tonal"
         class="mb-4"
+        icon="mdi-check-circle"
       >
         <div class="d-flex align-center">
-          <v-icon class="mr-2">mdi-check-circle</v-icon>
           <div class="flex-grow-1">
-            Signed in as {{ userEmail }}
+            Signed in as <strong>{{ userEmail || 'Google User' }}</strong>
           </div>
           <v-btn
             variant="text"
@@ -369,9 +369,12 @@ async function authenticateGoogle() {
         // Save token to localStorage for persistence across refreshes
         localStorage.setItem('google_access_token', response.access_token)
         // Also save the expiration time (Google tokens expire in ~1 hour)
-        localStorage.setItem('google_token_expiry', Date.now() + (response.expires_in * 1000))
+        localStorage.setItem('google_token_expiry', String(Date.now() + (response.expires_in * 1000)))
         isAuthenticated.value = true
-        fetchUserInfo()
+        // Fetch and save user info
+        fetchUserInfo().then(() => {
+          localStorage.setItem('google_user_email', userEmail.value)
+        })
         isAuthenticating.value = false
       }
     })
@@ -418,6 +421,7 @@ function signOut() {
   userEmail.value = ''
   localStorage.removeItem('google_access_token')
   localStorage.removeItem('google_token_expiry')
+  localStorage.removeItem('google_user_email')
   if (window.google?.accounts?.oauth2 && token) {
     google.accounts.oauth2.revoke(token)
   }
@@ -440,8 +444,8 @@ async function processFiles() {
     // Get or create the "Normalized" subfolder
     const normalizedFolderId = await getOrCreateNormalizedFolder(folderId)
 
-    // Fetch files from Google Drive
-    const pdfFiles = await fetchDriveFiles(folderId)
+    // Fetch files from Google Drive (excluding files already in Normalized folder)
+    const pdfFiles = await fetchDriveFiles(folderId, normalizedFolderId)
 
     if (pdfFiles.length === 0) {
       error.value = 'No PDF files found in the specified folder'
@@ -482,7 +486,7 @@ async function processFiles() {
         await uploadToDrive(file.blob, file.name, normalizedFolderId)
 
         file.status = 'done'
-        file.statusText = `Complete (${formatBytes(file.originalSize)} → ${formatBytes(file.processedSize)})`
+        file.statusText = `Complete (${formatBytes(file.originalSize)} \u2192 ${formatBytes(file.processedSize)})`
         processedFiles.value.push(file)
 
       } catch (err) {
@@ -506,9 +510,12 @@ async function processFiles() {
   }
 }
 
-async function fetchDriveFiles(folderId) {
+async function fetchDriveFiles(folderId, normalizedFolderId = null) {
+  // Build query to get PDFs from the main folder only (not from Normalized subfolder)
+  let query = `'${folderId}'+in+parents+and+mimeType='application/pdf'`
+
   const response = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+mimeType='application/pdf'&fields=files(id,name,size)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,size,parents)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     {
       headers: { Authorization: `Bearer ${accessToken.value}` }
     }
@@ -524,14 +531,32 @@ async function fetchDriveFiles(folderId) {
   const allFiles = data.files || []
 
   // Filter out temp files, already normalized files, and files without .pdf extension
+  // Also de-duplicate by file ID
+  const seenIds = new Set()
+  const seenNames = new Set()
+
   return allFiles.filter(file => {
-    const name = file.name.toLowerCase()
+    // Skip if we've already seen this file ID
+    if (seenIds.has(file.id)) return false
+    seenIds.add(file.id)
+
+    // Skip if we've already seen this filename (to avoid processing duplicates)
+    const nameLower = file.name.toLowerCase()
+    if (seenNames.has(nameLower)) return false
+    seenNames.add(nameLower)
+
     // Skip temp files
-    if (name.startsWith('temp_') || name.startsWith('temp-')) return false
-    // Skip already normalized files
-    if (name.startsWith('normalized_')) return false
+    if (nameLower.startsWith('temp_') || nameLower.startsWith('temp-')) return false
+    // Skip already normalized files (with old prefix)
+    if (nameLower.startsWith('normalized_')) return false
     // Only include files with .pdf extension
-    if (!name.endsWith('.pdf')) return false
+    if (!nameLower.endsWith('.pdf')) return false
+
+    // Skip files that are in the Normalized subfolder
+    if (normalizedFolderId && file.parents && file.parents.includes(normalizedFolderId)) {
+      return false
+    }
+
     return true
   })
 }
@@ -664,8 +689,9 @@ function getPageDimensions(size) {
 
 async function uploadToDrive(blob, filename, parentFolderId) {
   // First, check if file already exists in the folder
+  const escapedFilename = filename.replace(/'/g, "\\'").replace(/\\/g, "\\\\")
   const searchResponse = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q='${parentFolderId}'+in+parents+and+name='${filename.replace(/'/g, "\\'")}'&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files?q='${parentFolderId}'+in+parents+and+name='${escapedFilename}'&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     {
       headers: { Authorization: `Bearer ${accessToken.value}` }
     }
@@ -686,7 +712,7 @@ async function uploadToDrive(blob, filename, parentFolderId) {
     form.append('file', blob)
 
     const response = await fetch(
-      `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`,
+      `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart&supportsAllDrives=true`,
       {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${accessToken.value}` },
@@ -696,10 +722,13 @@ async function uploadToDrive(blob, filename, parentFolderId) {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
+      console.error('Upload PATCH error:', errorData)
       throw new Error(errorData.error?.message || 'Failed to update file on Drive')
     }
 
-    return await response.json()
+    const result = await response.json()
+    console.log('File updated successfully:', result.id)
+    return result
   } else {
     // Create new file
     const metadata = {
@@ -713,7 +742,7 @@ async function uploadToDrive(blob, filename, parentFolderId) {
     form.append('file', blob)
 
     const response = await fetch(
-      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true',
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${accessToken.value}` },
@@ -723,10 +752,13 @@ async function uploadToDrive(blob, filename, parentFolderId) {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
+      console.error('Upload POST error:', errorData)
       throw new Error(errorData.error?.message || 'Failed to upload file to Drive')
     }
 
-    return await response.json()
+    const result = await response.json()
+    console.log('File created successfully:', result.id)
+    return result
   }
 }
 
@@ -757,6 +789,7 @@ onMounted(async () => {
   // Check for existing token in localStorage
   const savedToken = localStorage.getItem('google_access_token')
   const tokenExpiry = localStorage.getItem('google_token_expiry')
+  const savedEmail = localStorage.getItem('google_user_email')
 
   if (savedToken) {
     // Check if token has expired locally first
@@ -764,7 +797,13 @@ onMounted(async () => {
       // Token expired, clear it
       localStorage.removeItem('google_access_token')
       localStorage.removeItem('google_token_expiry')
+      localStorage.removeItem('google_user_email')
       return
+    }
+
+    // Set the saved email immediately for better UX
+    if (savedEmail) {
+      userEmail.value = savedEmail
     }
 
     // Verify token is still valid with Google
@@ -776,16 +815,25 @@ onMounted(async () => {
         const data = await response.json()
         accessToken.value = savedToken
         isAuthenticated.value = true
-        userEmail.value = data.email
+        userEmail.value = data.email || savedEmail || ''
+        // Update saved email if it changed
+        if (data.email) {
+          localStorage.setItem('google_user_email', data.email)
+        }
       } else {
         // Token invalid, clear it
         localStorage.removeItem('google_access_token')
         localStorage.removeItem('google_token_expiry')
+        localStorage.removeItem('google_user_email')
+        userEmail.value = ''
       }
     } catch (err) {
       // Token validation failed, clear it
+      console.error('Token validation error:', err)
       localStorage.removeItem('google_access_token')
       localStorage.removeItem('google_token_expiry')
+      localStorage.removeItem('google_user_email')
+      userEmail.value = ''
     }
   }
 })
