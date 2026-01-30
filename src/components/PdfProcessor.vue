@@ -515,7 +515,19 @@ async function fetchDriveFiles(folderId) {
   }
 
   const data = await response.json()
-  return data.files || []
+  const allFiles = data.files || []
+
+  // Filter out temp files, already normalized files, and files without .pdf extension
+  return allFiles.filter(file => {
+    const name = file.name.toLowerCase()
+    // Skip temp files
+    if (name.startsWith('temp_') || name.startsWith('temp-')) return false
+    // Skip already normalized files
+    if (name.startsWith('normalized_')) return false
+    // Only include files with .pdf extension
+    if (!name.endsWith('.pdf')) return false
+    return true
+  })
 }
 
 async function downloadFile(fileId) {
@@ -622,8 +634,7 @@ async function uploadToDrive(blob, filename, parentFolderId) {
   )
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.error?.message || 'Failed to upload file to Drive')
+    const errorData = await response.json().catch(() => ({}))    throw new Error(errorData.error?.message || 'Failed to upload file to Drive')
   }
 
   return await response.json()
