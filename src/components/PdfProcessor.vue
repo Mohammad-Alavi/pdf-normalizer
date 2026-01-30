@@ -603,9 +603,12 @@ async function processFiles() {
       const isAuthError = sheetErr.message?.includes('403') ||
                           sheetErr.message?.includes('permission') ||
                           sheetErr.message?.includes('scope') ||
-                          sheetErr.message?.includes('access')
+                          sheetErr.message?.includes('access') ||
+                          sheetErr.message?.includes('PERMISSION_DENIED')
       if (isAuthError) {
-        addLog('warning', 'Sheets API permission denied - please sign out and sign back in to grant new permissions', sheetErr.message)
+        addLog('error', 'Sheets API permission denied', sheetErr.message)
+        addLog('warning', 'To fix: 1) Go to Google Cloud Console and enable Google Sheets API', 'https://console.cloud.google.com/apis/library/sheets.googleapis.com')
+        addLog('warning', 'To fix: 2) Go to myaccount.google.com/permissions and revoke this app, then sign in again')
       } else {
         addLog('warning', 'Could not create/find master sheet, will skip data aggregation', sheetErr.message)
       }
@@ -704,7 +707,15 @@ async function processFiles() {
           // Append invoice data to master Google Sheet
           if (masterSheetId) {
             try {
-              const invoiceData = parseInvoiceText(extractedText)
+              const invoiceData = parseInvoiceText(extractedText, file.name)
+
+              // Log extracted data for debugging
+              addLog('info', `Parsed invoice data for ${file.name}:`,
+                `Invoice #: ${invoiceData?.invoiceNumber || '(empty)'}, ` +
+                `Date: ${invoiceData?.date || '(empty)'}, ` +
+                `Buyer: ${invoiceData?.buyerName || '(empty)'}, ` +
+                `Items: ${invoiceData?.items?.length || 0}`)
+
               if (invoiceData && invoiceData.items && invoiceData.items.length > 0) {
                 addLog('info', `Appending ${invoiceData.items.length} row(s) to master sheet for ${file.name}`)
                 const appendResult = await appendToMasterSheet(masterSheetId, invoiceData)
@@ -915,7 +926,9 @@ async function getOrCreateMasterSheet(sheetsFolderId) {
 
   if (!createResponse.ok) {
     const errorData = await createResponse.json().catch(() => ({}))
-    throw new Error(`Failed to create master sheet: ${errorData.error?.message || 'Unknown error'}`)
+    const errorMsg = errorData.error?.message || JSON.stringify(errorData) || 'Unknown error'
+    const statusCode = createResponse.status
+    throw new Error(`Failed to create master sheet (HTTP ${statusCode}): ${errorMsg}`)
   }
 
   const sheetData = await createResponse.json()
@@ -996,7 +1009,8 @@ async function appendToMasterSheet(spreadsheetId, invoiceData) {
   )
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))    throw new Error(`Failed to append to master sheet: ${errorData.error?.message || 'Unknown error'}`)
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(`Failed to append to master sheet: ${errorData.error?.message || 'Unknown error'}`)
   }
 
   const result = await response.json()
@@ -1220,9 +1234,29 @@ function normalizeArabicText(text) {
   return normalized
 }
 
+// Parse filename to extract invoice number and buyer name
+// Format: "3427 - آموزشگاه زبان کوشش" or "3427 - آموزشگاه زبان کوشش.pdf"
+function parseFilename(filename) {
+  if (!filename) return { invoiceNumber: '', buyerName: '' }
+
+  // Remove .pdf extension if present
+  const nameWithoutExt = filename.replace(/\.pdf$/i, '')
+
+  // Split by " - " separator
+  const parts = nameWithoutExt.split(' - ')
+
+  if (parts.length >= 2) {
+    const invoiceNumber = parts[0].trim()
+    const buyerName = parts.slice(1).join(' - ').trim() // Handle case where buyer name contains " - "
+    return { invoiceNumber, buyerName }
+  }
+
+  return { invoiceNumber: '', buyerName: '' }
+}
+
 // Parse Persian invoice text and extract structured data
 // Specialized for Rastakhiz invoice format
-function parseInvoiceText(text) {
+function parseInvoiceText(text, filename = '') {
   if (!text) return null
 
   // Normalize text first
@@ -1241,106 +1275,56 @@ function parseInvoiceText(text) {
     rawText: text
   }
 
-  // 1. Extract شماره (Invoice Number)
-  // Pattern: "شماره: 3427" or "شماره:3427"
-  const invoiceNumMatch = normalizedText.match(/شماره[:\s]*(\d+)/)
-  if (invoiceNumMatch) {
-    result.invoiceNumber = invoiceNumMatch[1]
+  // PRIMARY: Extract invoice number and buyer name from filename
+  // Format: "3427 - آموزشگاه زبان کوشش.pdf"
+  const filenameData = parseFilename(filename)
+  if (filenameData.invoiceNumber) {
+    result.invoiceNumber = filenameData.invoiceNumber
+  }
+  if (filenameData.buyerName) {
+    result.buyerName = filenameData.buyerName
   }
 
-  // 2. Extract تاریخ (Date)
+  // FALLBACK: Extract invoice number from text if not found in filename
+  // Pattern: "شماره: 3427" or "شماره:3427"
+  if (!result.invoiceNumber) {
+    const invoiceNumMatch = normalizedText.match(/شماره[:\s]*(\d+)/)
+    if (invoiceNumMatch) {
+      result.invoiceNumber = invoiceNumMatch[1]
+    }
+  }
+
+  // Extract تاریخ (Date) from text
   // Pattern: "1403/04/02 :تاریخ" (RTL format) or "تاریخ: 1403/04/02"
   const dateMatch = normalizedText.match(/(\d{4}\/\d{2}\/\d{2})\s*:?\s*تاریخ|تاریخ\s*:?\s*(\d{4}\/\d{2}\/\d{2})/)
   if (dateMatch) {
     result.date = dateMatch[1] || dateMatch[2]
   }
 
-  // 3. Extract buyer's نام شخص حقیقی / حقوقی
-  // There are TWO instances in the text: one after مشخصات فروشنده (seller) and one after مشخصات خریدار (buyer)
-  // We want the one from the buyer section (مشخصات خریدار)
-  // Note: Due to RTL extraction, the value might appear before OR after the label
-  const buyerSectionStart = normalizedText.indexOf('مشخصات خریدار')
-  if (buyerSectionStart !== -1) {
-    const buyerSection = normalizedText.substring(buyerSectionStart)
+  // FALLBACK: Extract buyer name from text if not found in filename
+  // Find the SECOND instance of "نام شخص حقیقی / حقوقی" (first is seller, second is buyer)
+  if (!result.buyerName) {
+    const label = 'نام شخص حقیقی / حقوقی'
+    const firstIndex = normalizedText.indexOf(label)
 
-    // Try multiple label variations (different character forms)
-    const labelVariations = [
-      'نام شخص حقیقی / حقوقی',
-      'نام شخص حقیقی/ حقوقی',
-      'نام شخص حقیقی /حقوقی',
-      'نام شخص حقیقی/حقوقی',
-      'نام شخص حقيقي / حقوقي',  // Arabic ي instead of Persian ی
-      'نام شخص حقيقى / حقوقى'   // Different form of ی
-    ]
+    if (firstIndex !== -1) {
+      // Find second instance starting after the first one
+      const secondIndex = normalizedText.indexOf(label, firstIndex + label.length)
 
-    let foundBuyerName = ''
-
-    for (const label of labelVariations) {
-      const labelIndex = buyerSection.indexOf(label)
-      if (labelIndex !== -1) {
-        // Try Pattern 1: Value AFTER label (standard LTR extraction)
-        // Format: "نام شخص حقیقی / حقوقی: VALUE" or "نام شخص حقیقی / حقوقی VALUE"
-        const afterLabel = buyerSection.substring(labelIndex + label.length)
-        const afterMatch = afterLabel.match(/^[:\s]*([^\n:]+)/)
-        if (afterMatch && afterMatch[1] && afterMatch[1].trim().length > 2) {
-          // Check it's not another field label
-          const value = afterMatch[1].trim()
-          if (!value.includes('شناسه') && !value.includes('کد') && !value.includes('شماره')) {
-            foundBuyerName = value
-            break
+      if (secondIndex !== -1) {
+        // Get text after the second instance of the label
+        const afterLabel = normalizedText.substring(secondIndex + label.length)
+        // Extract value until newline or colon (next field)
+        const match = afterLabel.match(/^[:\s]*([^\n:]+)/)
+        if (match && match[1]) {
+          const value = match[1].trim()
+          // Make sure it's not another field label
+          if (value.length > 2 && !value.includes('شناسه') && !value.includes('کد')) {
+            result.buyerName = value
           }
         }
-
-        // Try Pattern 2: Value BEFORE label (RTL text extraction)
-        // Format: "VALUE :نام شخص حقیقی / حقوقی" or "VALUE نام شخص حقیقی / حقوقی"
-        const beforeLabel = buyerSection.substring(0, labelIndex)
-        // Look for the last meaningful text before the label (Persian/Arabic text or mixed)
-        const beforeMatch = beforeLabel.match(/([^\n:]+?)[:\s]*$/)
-        if (beforeMatch && beforeMatch[1] && beforeMatch[1].trim().length > 2) {
-          const value = beforeMatch[1].trim()
-          // Check it's not another field label or number
-          if (!value.includes('شناسه') && !value.includes('کد') && !value.includes('شماره') &&
-              !value.match(/^\d+$/) && value.length > 2) {
-            foundBuyerName = value
-            break
-          }
-        }
-
-        // Try Pattern 3: Look for the line containing the label and extract around it
-        const lines = buyerSection.split('\n')
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].includes(label)) {
-            // Check the same line for value (might be separated by spaces)
-            const lineWithoutLabel = lines[i].replace(label, '').replace(/[:\s]+/g, ' ').trim()
-            if (lineWithoutLabel.length > 2 && !lineWithoutLabel.match(/^\d+$/)) {
-              foundBuyerName = lineWithoutLabel
-              break
-            }
-            // Check previous line (RTL document might have value on line above)
-            if (i > 0 && lines[i-1].trim().length > 2) {
-              const prevLine = lines[i-1].trim()
-              if (!prevLine.includes('مشخصات') && !prevLine.match(/^\d+$/)) {
-                foundBuyerName = prevLine
-                break
-              }
-            }
-            // Check next line
-            if (i < lines.length - 1 && lines[i+1].trim().length > 2) {
-              const nextLine = lines[i+1].trim()
-              if (!nextLine.includes('شناسه') && !nextLine.includes('کد')) {
-                foundBuyerName = nextLine
-                break
-              }
-            }
-            break
-          }
-        }
-
-        if (foundBuyerName) break
       }
     }
-
-    result.buyerName = foundBuyerName
   }
 
   // 4. Parse table rows
@@ -1398,7 +1382,7 @@ function createExcelFromText(extractedText, originalFilename) {
   const wb = XLSX.utils.book_new()
 
   // Try to parse as invoice first
-  const invoiceData = parseInvoiceText(extractedText)
+  const invoiceData = parseInvoiceText(extractedText, originalFilename)
 
   // Sheet 1: Invoice Data (main sheet with all essential fields)
   // Columns: شماره | تاریخ | نام شخص حقیقی / حقوقی | ردیف | شرح کالا یا خدمات | مبلغ کل پس از تخفیف | جمع مالیات و عوارض
