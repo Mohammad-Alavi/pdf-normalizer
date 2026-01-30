@@ -266,16 +266,26 @@
                 <span v-if="log.details" class="text-grey-darken-1 ml-2">— {{ log.details }}</span>
               </div>
             </div>
-            <v-btn
-              variant="text"
-              size="small"
-              color="error"
-              class="mt-2"
-              @click="clearLogs"
-            >
-              <v-icon size="small" class="mr-1">mdi-delete</v-icon>
-              Clear Logs
-            </v-btn>
+            <div class="d-flex mt-2" style="gap: 8px;">
+              <v-btn
+                variant="text"
+                size="small"
+                color="primary"
+                @click="copyLogs"
+              >
+                <v-icon size="small" class="mr-1">mdi-content-copy</v-icon>
+                Copy Logs
+              </v-btn>
+              <v-btn
+                variant="text"
+                size="small"
+                color="error"
+                @click="clearLogs"
+              >
+                <v-icon size="small" class="mr-1">mdi-delete</v-icon>
+                Clear Logs
+              </v-btn>
+            </div>
           </v-expansion-panel-text>
         </v-expansion-panel>
       </v-expansion-panels>
@@ -287,6 +297,11 @@
 import { ref, computed, onMounted } from 'vue'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import JSZip from 'jszip'
+import Tesseract from 'tesseract.js'
+import * as pdfjsLib from 'pdfjs-dist'
+
+// Configure PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
 
 // State
 const driveLink = ref('')
@@ -429,6 +444,28 @@ function clearLogs() {
   processingLogs.value = []
 }
 
+async function copyLogs() {
+  const logText = processingLogs.value.map(log => {
+    const prefix = log.type === 'success' ? '✓' : log.type === 'error' ? '✗' : log.type === 'warning' ? '⚠' : 'ℹ'
+    const details = log.details ? ` — ${log.details}` : ''
+    return `[${log.timestamp}] ${prefix} ${log.message}${details}`
+  }).join('\n')
+
+  try {
+    await navigator.clipboard.writeText(logText)
+    // Show a brief success message
+    const originalLogs = [...processingLogs.value]
+    addLog('success', 'Logs copied to clipboard!')
+    // Remove the "copied" message after 2 seconds
+    setTimeout(() => {
+      processingLogs.value = originalLogs
+    }, 2000)
+  } catch (err) {
+    console.error('Failed to copy logs:', err)
+    addLog('error', 'Failed to copy logs to clipboard')
+  }
+}
+
 // Google OAuth
 async function authenticateGoogle() {
   isAuthenticating.value = true
@@ -503,31 +540,38 @@ function loadGoogleScript() {
 
 async function fetchUserInfo() {
   try {
-    console.log('Fetching user info...')
+    console.log('=== Fetching user info ===')
+    console.log('Using access token (first 20 chars):', accessToken.value.substring(0, 20) + '...')
+
     const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${accessToken.value}` }
     })
+
+    console.log('User info response status:', response.status)
+
     if (!response.ok) {
-      console.error('Failed to fetch user info, status:', response.status)
-      return
+      const errorText = await response.text()
+      console.error('Failed to fetch user info, status:', response.status, 'error:', errorText)
+      return null
     }
+
     const data = await response.json()
-    console.log('User info response:', data)
-    userEmail.value = data.email || ''
-    console.log('Set userEmail to:', userEmail.value)
+    console.log('User info response data:', JSON.stringify(data))
+
+    const email = data.email || ''
+    userEmail.value = email
+    console.log('Set userEmail to:', email)
+
+    return data
   } catch (err) {
     console.error('Failed to fetch user info:', err)
+    return null
   }
 }
 
 function signOut() {
   const token = accessToken.value
-  accessToken.value = ''
-  isAuthenticated.value = false
-  userEmail.value = ''
-  localStorage.removeItem('google_access_token')
-  localStorage.removeItem('google_token_expiry')
-  localStorage.removeItem('google_user_email')
+  clearAuthData()
   if (window.google?.accounts?.oauth2 && token) {
     google.accounts.oauth2.revoke(token)
   }
@@ -603,7 +647,13 @@ async function processFiles() {
         file.status = 'processing'
         file.statusText = 'Processing...'
         addLog('info', `Processing PDF: ${file.name}`, `Options: OCR=${options.value.ocr}, Standardize=${options.value.standardize}, Compress=${options.value.compress}, PageSize=${options.value.pageSize}`)
-        const processedBytes = await processPdf(pdfBytes, file.name)
+
+        const processResult = await processPdf(pdfBytes, file.name, (status) => {
+          file.statusText = status
+        })
+        const processedBytes = processResult.pdfBytes
+        const extractedText = processResult.extractedText
+
         file.processedSize = processedBytes.byteLength
         file.blob = new Blob([processedBytes], { type: 'application/pdf' })
 
@@ -614,9 +664,22 @@ async function processFiles() {
         // Upload back to Drive (to Normalized folder)
         file.status = 'uploading'
         file.statusText = 'Uploading to Drive...'
-        addLog('info', `Uploading to Drive: ${file.name}`)
+        addLog('info', `Uploading PDF to Drive: ${file.name}`)
         const uploadResult = await uploadToDrive(file.blob, file.name, normalizedFolderId)
-        addLog('success', `Uploaded to Drive: ${file.name}`, `File ID: ${uploadResult.id}`)
+        addLog('success', `Uploaded PDF to Drive: ${file.name}`, `File ID: ${uploadResult.id}`)
+
+        // If OCR was enabled and text was extracted, upload the text file too
+        if (options.value.ocr && extractedText && extractedText.trim()) {
+          const textFilename = file.name.replace('.pdf', '_OCR.txt').replace('.PDF', '_OCR.txt')
+          const textBlob = new Blob([extractedText], { type: 'text/plain' })
+          addLog('info', `Uploading OCR text: ${textFilename}`, `${extractedText.length} characters`)
+          try {
+            const textUploadResult = await uploadToDrive(textBlob, textFilename, normalizedFolderId)
+            addLog('success', `Uploaded OCR text: ${textFilename}`, `File ID: ${textUploadResult.id}`)
+          } catch (textErr) {
+            addLog('warning', `Failed to upload OCR text for ${file.name}`, textErr.message)
+          }
+        }
 
         file.status = 'done'
         file.statusText = `Complete (${formatBytes(file.originalSize)} → ${formatBytes(file.processedSize)})`
@@ -781,15 +844,84 @@ async function downloadFile(fileId) {
   return await response.arrayBuffer()
 }
 
-async function processPdf(pdfBytes, filename) {
+async function processPdf(pdfBytes, filename, onOcrProgress = null) {
+  let extractedText = ''
+
   try {
-    // Load the PDF
+    // Load the PDF with pdf-lib for manipulation
     const pdfDoc = await PDFDocument.load(pdfBytes, {
       ignoreEncryption: true,
       updateMetadata: false
     })
 
     const pages = pdfDoc.getPages()
+
+    // OCR: Extract text from scanned PDFs using Tesseract.js
+    if (options.value.ocr) {
+      try {
+        addLog('info', `Running OCR on ${filename}...`, `${pages.length} page(s)`)
+
+        // Load PDF with pdf.js to render pages as images
+        const loadingTask = pdfjsLib.getDocument({ data: pdfBytes })
+        const pdfJsDoc = await loadingTask.promise
+
+        const textParts = []
+
+        for (let i = 1; i <= pdfJsDoc.numPages; i++) {
+          if (onOcrProgress) {
+            onOcrProgress(`OCR page ${i}/${pdfJsDoc.numPages}`)
+          }
+          addLog('info', `OCR processing page ${i}/${pdfJsDoc.numPages}`, filename)
+
+          const page = await pdfJsDoc.getPage(i)
+          const viewport = page.getViewport({ scale: 2.0 }) // Higher scale = better OCR quality
+
+          // Create canvas to render PDF page
+          const canvas = document.createElement('canvas')
+          const context = canvas.getContext('2d')
+          canvas.height = viewport.height
+          canvas.width = viewport.width
+
+          await page.render({
+            canvasContext: context,
+            viewport: viewport
+          }).promise
+
+          // Convert canvas to image data URL
+          const imageDataUrl = canvas.toDataURL('image/png')
+
+          // Run Tesseract OCR on the image
+          const result = await Tesseract.recognize(
+            imageDataUrl,
+            'eng', // Language
+            {
+              logger: m => {
+                if (m.status === 'recognizing text' && m.progress) {
+                  // Could add progress updates here
+                }
+              }
+            }
+          )
+
+          if (result.data.text.trim()) {
+            textParts.push(`--- Page ${i} ---\n${result.data.text.trim()}`)
+          }
+        }
+
+        extractedText = textParts.join('\n\n')
+
+        if (extractedText) {
+          addLog('success', `OCR complete for ${filename}`, `Extracted ${extractedText.length} characters`)
+        } else {
+          addLog('warning', `OCR complete but no text found in ${filename}`)
+        }
+
+      } catch (ocrErr) {
+        console.error('OCR error:', ocrErr)
+        addLog('warning', `OCR failed for ${filename}`, ocrErr.message)
+        // Continue without OCR text
+      }
+    }
 
     // Standardize page sizes if enabled
     if (options.value.standardize && options.value.pageSize !== 'ORIGINAL') {
@@ -827,12 +959,20 @@ async function processPdf(pdfBytes, filename) {
       saveOptions.useObjectStreams = true
     }
 
-    return await pdfDoc.save(saveOptions)
+    const processedPdfBytes = await pdfDoc.save(saveOptions)
+
+    return {
+      pdfBytes: processedPdfBytes,
+      extractedText: extractedText
+    }
 
   } catch (err) {
     console.error('PDF processing error:', err)
     // If processing fails, return original
-    return pdfBytes
+    return {
+      pdfBytes: pdfBytes,
+      extractedText: extractedText
+    }
   }
 }
 
@@ -956,9 +1096,19 @@ async function downloadAll() {
   URL.revokeObjectURL(url)
 }
 
+// Helper to clear all auth data
+function clearAuthData() {
+  accessToken.value = ''
+  isAuthenticated.value = false
+  userEmail.value = ''
+  localStorage.removeItem('google_access_token')
+  localStorage.removeItem('google_token_expiry')
+  localStorage.removeItem('google_user_email')
+}
+
 // Initialize
 onMounted(async () => {
-  console.log('PdfProcessor mounted, checking for saved auth...')
+  console.log('=== PdfProcessor mounted, checking for saved auth ===')
 
   // Check for existing token in localStorage
   const savedToken = localStorage.getItem('google_access_token')
@@ -966,64 +1116,75 @@ onMounted(async () => {
   const savedEmail = localStorage.getItem('google_user_email')
 
   console.log('Saved token exists:', !!savedToken)
+  console.log('Saved token (first 20 chars):', savedToken ? savedToken.substring(0, 20) + '...' : 'none')
   console.log('Saved email:', savedEmail)
   console.log('Token expiry:', tokenExpiry ? new Date(parseInt(tokenExpiry)).toISOString() : 'not set')
   console.log('Current time:', new Date().toISOString())
+  console.log('Time until expiry:', tokenExpiry ? `${Math.round((parseInt(tokenExpiry) - Date.now()) / 1000 / 60)} minutes` : 'N/A')
 
-  if (savedToken) {
-    // Check if token has expired locally first
-    if (tokenExpiry && Date.now() > parseInt(tokenExpiry)) {
-      console.log('Token expired locally, clearing...')
-      // Token expired, clear it
-      localStorage.removeItem('google_access_token')
-      localStorage.removeItem('google_token_expiry')
-      localStorage.removeItem('google_user_email')
-      return
+  if (!savedToken) {
+    console.log('No saved token found, user needs to sign in')
+    return
+  }
+
+  // Check if token has expired locally first
+  if (tokenExpiry && Date.now() > parseInt(tokenExpiry)) {
+    console.log('Token expired locally, clearing auth data...')
+    clearAuthData()
+    return
+  }
+
+  // Token exists and hasn't expired locally - verify with Google
+  console.log('Verifying token with Google API...')
+
+  try {
+    const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${savedToken}` }
+    })
+
+    console.log('Google API response status:', response.status)
+
+    if (response.ok) {
+      const data = await response.json()
+      console.log('Token VALID! User data:', JSON.stringify(data))
+
+      // Token is valid - set all auth state
+      accessToken.value = savedToken
+      isAuthenticated.value = true
+
+      // Use email from API response, fallback to saved email
+      const email = data.email || savedEmail || ''
+      userEmail.value = email
+      console.log('Setting userEmail to:', email)
+
+      // Update saved email if we got a fresh one from API
+      if (data.email && data.email !== savedEmail) {
+        localStorage.setItem('google_user_email', data.email)
+        console.log('Updated saved email to:', data.email)
+      }
+
+      console.log('=== Auth restored successfully ===')
+      console.log('isAuthenticated:', isAuthenticated.value)
+      console.log('userEmail:', userEmail.value)
+    } else {
+      // Token is invalid
+      const errorText = await response.text()
+      console.log('Token INVALID! Status:', response.status, 'Error:', errorText)
+      clearAuthData()
     }
-
-    // Set the saved email immediately for better UX
+  } catch (err) {
+    // Network or other error
+    console.error('Token validation network error:', err)
+    // Don't clear auth on network errors - might be temporary
+    // But still set state from localStorage for offline-ish UX
     if (savedEmail) {
       userEmail.value = savedEmail
-      console.log('Set email from localStorage:', savedEmail)
+      accessToken.value = savedToken
+      isAuthenticated.value = true
+      console.log('Network error but using cached auth data')
+    } else {
+      clearAuthData()
     }
-
-    // Verify token is still valid with Google
-    try {
-      console.log('Verifying token with Google...')
-      const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-        headers: { Authorization: `Bearer ${savedToken}` }
-      })
-      console.log('Token verification response status:', response.status)
-
-      if (response.ok) {
-        const data = await response.json()
-        console.log('Token valid, user email from API:', data.email)
-        accessToken.value = savedToken
-        isAuthenticated.value = true
-        userEmail.value = data.email || savedEmail || ''
-        // Update saved email if it changed
-        if (data.email) {
-          localStorage.setItem('google_user_email', data.email)
-        }
-      } else {
-        // Token invalid, clear it
-        const errorText = await response.text()
-        console.log('Token invalid (response not ok), status:', response.status, 'error:', errorText)
-        localStorage.removeItem('google_access_token')
-        localStorage.removeItem('google_token_expiry')
-        localStorage.removeItem('google_user_email')
-        userEmail.value = ''
-      }
-    } catch (err) {
-      // Token validation failed, clear it
-      console.error('Token validation error:', err)
-      localStorage.removeItem('google_access_token')
-      localStorage.removeItem('google_token_expiry')
-      localStorage.removeItem('google_user_email')
-      userEmail.value = ''
-    }
-  } else {
-    console.log('No saved token found')
   }
 })
 </script>
