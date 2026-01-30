@@ -1063,117 +1063,104 @@ function normalizeArabicText(text) {
   return normalized
 }
 
-// Persian invoice field definitions for parsing
-const INVOICE_FIELDS = [
-  // Header fields
-  { key: 'invoiceNumber', labels: ['شماره فاکتور', 'شماره صورتحساب', 'شماره سریال'] },
-  { key: 'date', labels: ['تاریخ', 'تاریخ صدور', 'تاریخ فاکتور'] },
-  { key: 'buyerName', labels: ['نام خریدار', 'خریدار', 'نام مشتری', 'مشتری'] },
-  { key: 'buyerAddress', labels: ['آدرس خریدار', 'آدرس', 'نشانی'] },
-  { key: 'buyerPhone', labels: ['تلفن خریدار', 'تلفن', 'شماره تماس'] },
-  { key: 'buyerNationalId', labels: ['کد ملی', 'شناسه ملی', 'کد اقتصادی'] },
-  { key: 'sellerName', labels: ['نام فروشنده', 'فروشنده'] },
-  { key: 'sellerAddress', labels: ['آدرس فروشنده'] },
-
-  // Item fields
-  { key: 'itemDescription', labels: ['شرح کالا یا خدمات', 'شرح کالا', 'شرح خدمات', 'نام کالا', 'کالا'] },
-  { key: 'quantity', labels: ['تعداد', 'مقدار'] },
-  { key: 'unitPrice', labels: ['مبلغ واحد', 'قیمت واحد', 'فی'] },
-  { key: 'unit', labels: ['واحد'] },
-  { key: 'discount', labels: ['تخفیف'] },
-  { key: 'tax', labels: ['مالیات', 'مالیات بر ارزش افزوده', 'ارزش افزوده'] },
-
-  // Total fields
-  { key: 'subtotal', labels: ['جمع کل', 'جمع مبلغ', 'مبلغ کل قبل از تخفیف'] },
-  { key: 'totalDiscount', labels: ['جمع تخفیف', 'کل تخفیف'] },
-  { key: 'totalTax', labels: ['جمع مالیات', 'کل مالیات'] },
-  { key: 'totalAmount', labels: ['مبلغ قابل پرداخت', 'مبلغ نهایی', 'جمع کل قابل پرداخت', 'مبلغ کل'] },
-]
-
 // Parse Persian invoice text and extract structured data
+// Specialized for Rastakhiz invoice format
 function parseInvoiceText(text) {
   if (!text) return null
 
+  // Normalize text first
+  const normalizedText = normalizeArabicText(text)
+
   const result = {
-    // Header info
-    invoiceNumber: '',
-    date: '',
-    buyerName: '',
-    buyerAddress: '',
-    buyerPhone: '',
-    buyerNationalId: '',
-    sellerName: '',
-    sellerAddress: '',
+    // Header fields (non-table)
+    invoiceNumber: '',  // شماره
+    date: '',           // تاریخ
+    buyerName: '',      // نام شخص حقیقی / حقوقی (from buyer section)
 
-    // Items (array for multiple line items)
+    // Table items (can have multiple rows)
     items: [],
-
-    // Totals
-    subtotal: '',
-    totalDiscount: '',
-    totalTax: '',
-    totalAmount: '',
 
     // Raw text for reference
     rawText: text
   }
 
-  // Normalize text first
-  const normalizedText = normalizeArabicText(text)
+  // 1. Extract شماره (Invoice Number)
+  // Pattern: "شماره: 3427" or "شماره:3427"
+  const invoiceNumMatch = normalizedText.match(/شماره[:\s]*(\d+)/)
+  if (invoiceNumMatch) {
+    result.invoiceNumber = invoiceNumMatch[1]
+  }
 
-  // Split into lines for processing
-  const lines = normalizedText.split('\n').map(l => l.trim()).filter(l => l)
+  // 2. Extract تاریخ (Date)
+  // Pattern: "1403/04/02 :تاریخ" (RTL format) or "تاریخ: 1403/04/02"
+  const dateMatch = normalizedText.match(/(\d{4}\/\d{2}\/\d{2})\s*:?\s*تاریخ|تاریخ\s*:?\s*(\d{4}\/\d{2}\/\d{2})/)
+  if (dateMatch) {
+    result.date = dateMatch[1] || dateMatch[2]
+  }
 
-  // Extract field values using pattern matching
-  for (const field of INVOICE_FIELDS) {
-    for (const label of field.labels) {
-      // Pattern: "label: value" or "label value" with various separators
-      const patterns = [
-        new RegExp(`${label}[:\\s]+([^\\n]+)`, 'i'),
-        new RegExp(`${label}([^\\n]+)`, 'i')
-      ]
-
-      for (const pattern of patterns) {
-        const match = normalizedText.match(pattern)
-        if (match && match[1]) {
-          let value = match[1].trim()
-          // Clean up common separators at the start
-          value = value.replace(/^[:\s،,]+/, '').trim()
-          // Don't overwrite if already has a value
-          if (!result[field.key] || result[field.key] === '') {
-            result[field.key] = value
-            break
-          }
-        }
-      }
+  // 3. Extract buyer's نام شخص حقیقی / حقوقی
+  // This appears in the "مشخصات خریدار" section (buyer details)
+  // We need to find the نام شخص حقیقی / حقوقی that comes AFTER مشخصات خریدار
+  const buyerSectionStart = normalizedText.indexOf('مشخصات خریدار')
+  if (buyerSectionStart !== -1) {
+    const buyerSection = normalizedText.substring(buyerSectionStart)
+    // Find نام شخص حقیقی / حقوقی: value in the buyer section
+    const buyerNameMatch = buyerSection.match(/نام شخص حقیقی \/ حقوقی[:\s]*([^]+?)(?:فکس|تلفن|کد پستی|نشانی کامل|$)/)
+    if (buyerNameMatch) {
+      let buyerName = buyerNameMatch[1].trim()
+      // Clean up - remove any trailing colons or separators
+      buyerName = buyerName.replace(/[:\s،,]+$/, '').trim()
+      // Remove any text that looks like the next field label
+      buyerName = buyerName.split(/\s*(?:فکس|تلفن|کد پستی|نشانی)/)[0].trim()
+      result.buyerName = buyerName
     }
   }
 
-  // Try to extract line items (items in a table format)
-  // Look for patterns like: description | quantity | unit price | amount
-  const itemPattern = /(.+?)\s+(\d+)\s+(\d[\d,]*)\s+(\d[\d,]*)/g
-  let itemMatch
-  while ((itemMatch = itemPattern.exec(normalizedText)) !== null) {
-    // Validate this looks like an item row (not a header)
-    const desc = itemMatch[1].trim()
-    if (desc.length > 2 && !desc.includes('شرح') && !desc.includes('تعداد')) {
+  // 4. Parse table rows
+  // The table has these columns (RTL order in headers, but data appears LTR in extracted text):
+  // Headers: ردیف | شرح کالا یا خدمات | تعداد | مبلغ واحد | مبلغ کل | مبلغ تخفیف | مبلغ کل پس از تخفیف | جمع مالیات و عوارض | جمع مبلغ کل بعد از مالیات
+  //
+  // In extracted text, after "ردیف" header, data appears as:
+  // grandTotal tax totalAfterDiscount discount total unitPrice quantity description rowNumber
+  // Example: 11,550,000 1,050,000 10,500,000 0 10,500,000 150,000 70 نرم افزار کلاس آنلاین 1
+
+  // Find the position after "ردیف" header to start looking for data
+  const headerEndMatch = normalizedText.match(/تعداد\s+شرح کالا یا خدمات\s+ردیف/)
+  if (headerEndMatch) {
+    const dataStartIndex = normalizedText.indexOf(headerEndMatch[0]) + headerEndMatch[0].length
+
+    // Get the text after headers until "جمع کل" (totals row)
+    let dataSection = normalizedText.substring(dataStartIndex)
+    const totalsIndex = dataSection.indexOf('جمع کل')
+    if (totalsIndex !== -1) {
+      dataSection = dataSection.substring(0, totalsIndex)
+    }
+
+    // Pattern to match each row:
+    // Numbers (8 of them) followed by Persian text (description) followed by row number
+    // grandTotal tax totalAfterDiscount discount total unitPrice quantity description rowNum
+    const rowPattern = /([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+(\d+)\s+([^\d]+?)\s+(\d+)(?=\s|$)/g
+
+    let match
+    while ((match = rowPattern.exec(dataSection)) !== null) {
+      const description = match[8].trim()
+      // Skip if this looks like a header or total row
+      if (description.includes('شرح') || description.includes('ردیف') || description.includes('جمع')) {
+        continue
+      }
+
       result.items.push({
-        description: desc,
-        quantity: itemMatch[2],
-        unitPrice: itemMatch[3].replace(/,/g, ''),
-        amount: itemMatch[4].replace(/,/g, '')
+        rowNumber: match[9],                    // ردیف
+        description: description,               // شرح کالا یا خدمات
+        quantity: match[7],                     // تعداد
+        unitPrice: match[6],                    // مبلغ واحد
+        total: match[5],                        // مبلغ کل
+        discount: match[4],                     // مبلغ تخفیف
+        totalAfterDiscount: match[3],           // مبلغ کل پس از تخفیف
+        taxAndDuties: match[2],                 // جمع مالیات و عوارض
+        grandTotal: match[1]                    // جمع مبلغ کل بعد از مالیات و عوارض
       })
     }
-  }
-
-  // If no items found via pattern, use the itemDescription field
-  if (result.items.length === 0 && result.itemDescription) {
-    result.items.push({
-      description: result.itemDescription,
-      quantity: result.quantity || '',
-      unitPrice: result.unitPrice || '',
-      amount: result.totalAmount || ''
-    })
   }
 
   return result
@@ -1186,67 +1173,104 @@ function createExcelFromText(extractedText, originalFilename) {
   // Try to parse as invoice first
   const invoiceData = parseInvoiceText(extractedText)
 
-  // Sheet 1: Invoice Summary (structured data)
-  const summaryData = [
-    ['فایل مبدا / Source File', originalFilename],
-    [''],
-    ['اطلاعات فاکتور / Invoice Information'],
-    ['شماره فاکتور / Invoice Number', invoiceData?.invoiceNumber || ''],
-    ['تاریخ / Date', invoiceData?.date || ''],
-    [''],
-    ['اطلاعات خریدار / Buyer Information'],
-    ['نام خریدار / Buyer Name', invoiceData?.buyerName || ''],
-    ['آدرس / Address', invoiceData?.buyerAddress || ''],
-    ['تلفن / Phone', invoiceData?.buyerPhone || ''],
-    ['کد ملی / National ID', invoiceData?.buyerNationalId || ''],
-    [''],
-    ['اطلاعات فروشنده / Seller Information'],
-    ['نام فروشنده / Seller Name', invoiceData?.sellerName || ''],
-    ['آدرس فروشنده / Seller Address', invoiceData?.sellerAddress || ''],
-    [''],
-    ['جمع‌بندی / Totals'],
-    ['جمع کل / Subtotal', invoiceData?.subtotal || ''],
-    ['تخفیف / Discount', invoiceData?.totalDiscount || ''],
-    ['مالیات / Tax', invoiceData?.totalTax || ''],
-    ['مبلغ قابل پرداخت / Total Amount', invoiceData?.totalAmount || ''],
+  // Sheet 1: Invoice Data (main sheet with all essential fields)
+  // Columns: شماره | تاریخ | نام شخص حقیقی / حقوقی | ردیف | شرح کالا یا خدمات | مبلغ کل پس از تخفیف | جمع مالیات و عوارض
+  const invoiceSheetData = [
+    // Header row with exact column names
+    [
+      'شماره',
+      'تاریخ',
+      'نام شخص حقیقی / حقوقی',
+      'ردیف',
+      'شرح کالا یا خدمات',
+      'مبلغ کل پس از تخفیف',
+      'جمع مالیات و عوارض'
+    ]
   ]
 
-  const wsSummary = XLSX.utils.aoa_to_sheet(summaryData)
-  wsSummary['!cols'] = [
-    { wch: 35 },  // Labels
-    { wch: 50 },  // Values
-  ]
-  // Set RTL direction for the sheet
-  wsSummary['!dir'] = 'rtl'
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'Invoice Summary')
-
-  // Sheet 2: Line Items (if any)
+  // Add data rows - one row per item in the invoice
   if (invoiceData?.items && invoiceData.items.length > 0) {
-    const itemsData = [
-      ['ردیف', 'شرح کالا/خدمات', 'تعداد', 'مبلغ واحد', 'مبلغ کل'],
-      ['Row', 'Description', 'Quantity', 'Unit Price', 'Total'],
+    invoiceData.items.forEach((item) => {
+      invoiceSheetData.push([
+        invoiceData.invoiceNumber || '',        // شماره
+        invoiceData.date || '',                 // تاریخ
+        invoiceData.buyerName || '',            // نام شخص حقیقی / حقوقی
+        item.rowNumber || '',                   // ردیف
+        item.description || '',                 // شرح کالا یا خدمات
+        item.totalAfterDiscount || '',          // مبلغ کل پس از تخفیف
+        item.taxAndDuties || ''                 // جمع مالیات و عوارض
+      ])
+    })
+  } else {
+    // If no items parsed, add a row with just header info
+    invoiceSheetData.push([
+      invoiceData?.invoiceNumber || '',
+      invoiceData?.date || '',
+      invoiceData?.buyerName || '',
+      '',
+      '',
+      '',
+      ''
+    ])
+  }
+
+  const wsInvoice = XLSX.utils.aoa_to_sheet(invoiceSheetData)
+  wsInvoice['!cols'] = [
+    { wch: 12 },  // شماره
+    { wch: 12 },  // تاریخ
+    { wch: 40 },  // نام شخص حقیقی / حقوقی
+    { wch: 8 },   // ردیف
+    { wch: 35 },  // شرح کالا یا خدمات
+    { wch: 20 },  // مبلغ کل پس از تخفیف
+    { wch: 20 },  // جمع مالیات و عوارض
+  ]
+  wsInvoice['!dir'] = 'rtl'
+  XLSX.utils.book_append_sheet(wb, wsInvoice, 'Invoice Data')
+
+  // Sheet 2: All Item Details (full table data for reference)
+  if (invoiceData?.items && invoiceData.items.length > 0) {
+    const fullItemsData = [
+      [
+        'ردیف',
+        'شرح کالا یا خدمات',
+        'تعداد',
+        'مبلغ واحد',
+        'مبلغ کل',
+        'مبلغ تخفیف',
+        'مبلغ کل پس از تخفیف',
+        'جمع مالیات و عوارض',
+        'جمع مبلغ کل بعد از مالیات'
+      ]
     ]
 
-    invoiceData.items.forEach((item, index) => {
-      itemsData.push([
-        index + 1,
+    invoiceData.items.forEach((item) => {
+      fullItemsData.push([
+        item.rowNumber || '',
         item.description || '',
         item.quantity || '',
         item.unitPrice || '',
-        item.amount || ''
+        item.total || '',
+        item.discount || '',
+        item.totalAfterDiscount || '',
+        item.taxAndDuties || '',
+        item.grandTotal || ''
       ])
     })
 
-    const wsItems = XLSX.utils.aoa_to_sheet(itemsData)
-    wsItems['!cols'] = [
-      { wch: 8 },   // Row number
-      { wch: 50 },  // Description
-      { wch: 12 },  // Quantity
-      { wch: 15 },  // Unit Price
-      { wch: 15 },  // Total
+    const wsFullItems = XLSX.utils.aoa_to_sheet(fullItemsData)
+    wsFullItems['!cols'] = [
+      { wch: 8 },   // ردیف
+      { wch: 35 },  // شرح کالا
+      { wch: 10 },  // تعداد
+      { wch: 15 },  // مبلغ واحد
+      { wch: 15 },  // مبلغ کل
+      { wch: 15 },  // مبلغ تخفیف
+      { wch: 20 },  // مبلغ کل پس از تخفیف
+      { wch: 20 },  // جمع مالیات
+      { wch: 22 },  // جمع مبلغ کل بعد از مالیات
     ]
-    wsItems['!dir'] = 'rtl'
-    XLSX.utils.book_append_sheet(wb, wsItems, 'Line Items')
+    wsFullItems['!dir'] = 'rtl'
+    XLSX.utils.book_append_sheet(wb, wsFullItems, 'Full Item Details')
   }
 
   // Sheet 3: Raw Text (for reference)
