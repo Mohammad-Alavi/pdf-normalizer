@@ -195,6 +195,22 @@
         </v-card-text>
       </v-card>
 
+      <!-- Link to Normalized folder -->
+      <v-alert
+        v-if="normalizedFolderLink"
+        type="info"
+        variant="tonal"
+        class="mb-4"
+      >
+        <div class="d-flex align-center">
+          <v-icon class="mr-2">mdi-folder-open</v-icon>
+          <span>Processed files uploaded to: </span>
+          <a :href="normalizedFolderLink" target="_blank" class="ml-1">
+            Open Normalized folder in Google Drive
+          </a>
+        </div>
+      </v-alert>
+
       <!-- Results -->
       <v-alert
         v-if="error"
@@ -286,6 +302,7 @@ const processedFiles = ref([])
 const error = ref('')
 const successMessage = ref('')
 const processingLogs = ref([])
+const normalizedFolderLink = ref('')
 
 // Options
 const options = ref({
@@ -526,6 +543,7 @@ async function processFiles() {
   files.value = []
   processedFiles.value = []
   progress.value = 0
+  normalizedFolderLink.value = ''
   clearLogs()
 
   try {
@@ -534,8 +552,16 @@ async function processFiles() {
 
     // Get or create the "Normalized" subfolder
     addLog('info', 'Checking for Normalized folder...')
-    const normalizedFolderId = await getOrCreateNormalizedFolder(folderId)
-    addLog('success', 'Normalized folder ready', `Folder ID: ${normalizedFolderId}`)
+    const { folderId: normalizedFolderId, created } = await getOrCreateNormalizedFolder(folderId)
+
+    if (created) {
+      addLog('success', 'Created new Normalized folder', `Folder ID: ${normalizedFolderId}`)
+    } else {
+      addLog('success', 'Found existing Normalized folder', `Folder ID: ${normalizedFolderId}`)
+    }
+
+    // Set the link to open the folder
+    normalizedFolderLink.value = `https://drive.google.com/drive/folders/${normalizedFolderId}`
 
     // Fetch files from Google Drive (excluding files already in Normalized folder)
     addLog('info', 'Fetching PDF files from Google Drive...')
@@ -589,8 +615,8 @@ async function processFiles() {
         file.status = 'uploading'
         file.statusText = 'Uploading to Drive...'
         addLog('info', `Uploading to Drive: ${file.name}`)
-        await uploadToDrive(file.blob, file.name, normalizedFolderId)
-        addLog('success', `Uploaded to Drive: ${file.name}`)
+        const uploadResult = await uploadToDrive(file.blob, file.name, normalizedFolderId)
+        addLog('success', `Uploaded to Drive: ${file.name}`, `File ID: ${uploadResult.id}`)
 
         file.status = 'done'
         file.statusText = `Complete (${formatBytes(file.originalSize)} → ${formatBytes(file.processedSize)})`
@@ -627,7 +653,7 @@ async function processFiles() {
 async function fetchDriveFiles(folderId, normalizedFolderId = null) {
   // Build query to get PDFs from the main folder only (not from Normalized subfolder)
   // Use spaces in query (they get encoded properly), not + signs
-  const query = `'${folderId}' in parents and mimeType='application/pdf'`
+  const query = `'${folderId}' in parents and mimeType='application/pdf' and trashed=false`
 
   const response = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,size,parents)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
@@ -677,10 +703,14 @@ async function fetchDriveFiles(folderId, normalizedFolderId = null) {
 }
 
 async function getOrCreateNormalizedFolder(parentFolderId) {
-  // First, check if "Normalized" folder already exists
-  const folderQuery = `'${parentFolderId}' in parents and name='Normalized' and mimeType='application/vnd.google-apps.folder'`
+  // First, check if "Normalized" folder already exists in the parent folder
+  // IMPORTANT: Add trashed=false to avoid finding trashed folders
+  const folderQuery = `'${parentFolderId}' in parents and name='Normalized' and mimeType='application/vnd.google-apps.folder' and trashed=false`
+
+  console.log('Searching for Normalized folder with query:', folderQuery)
+
   const searchResponse = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=files(id,name,parents)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     {
       headers: { Authorization: `Bearer ${accessToken.value}` }
     }
@@ -688,13 +718,27 @@ async function getOrCreateNormalizedFolder(parentFolderId) {
 
   if (searchResponse.ok) {
     const searchData = await searchResponse.json()
+    console.log('Folder search response:', searchData)
+
     if (searchData.files && searchData.files.length > 0) {
-      // Folder exists, return its ID
-      return searchData.files[0].id
+      const foundFolder = searchData.files[0]
+      console.log('Found existing Normalized folder:', foundFolder)
+
+      // Verify the folder is actually in the correct parent
+      if (foundFolder.parents && foundFolder.parents.includes(parentFolderId)) {
+        return { folderId: foundFolder.id, created: false }
+      } else {
+        console.warn('Found folder but parent mismatch, creating new one')
+      }
     }
+  } else {
+    const errorData = await searchResponse.json().catch(() => ({}))
+    console.error('Folder search failed:', errorData)
   }
 
   // Folder doesn't exist, create it
+  console.log('Creating new Normalized folder in parent:', parentFolderId)
+
   const createResponse = await fetch(
     'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true',
     {
@@ -713,11 +757,13 @@ async function getOrCreateNormalizedFolder(parentFolderId) {
 
   if (!createResponse.ok) {
     const errorData = await createResponse.json().catch(() => ({}))
+    console.error('Folder creation failed:', errorData)
     throw new Error(`Failed to create Normalized folder: ${errorData.error?.message || 'Unknown error'}`)
   }
 
   const createData = await createResponse.json()
-  return createData.id
+  console.log('Created new Normalized folder:', createData)
+  return { folderId: createData.id, created: true }
 }
 
 async function downloadFile(fileId) {
@@ -805,9 +851,13 @@ function getPageDimensions(size) {
 
 async function uploadToDrive(blob, filename, parentFolderId) {
   // First, check if file already exists in the folder
-  const escapedFilename = filename.replace(/'/g, "\\'").replace(/\\/g, "\\\\")
+  const escapedFilename = filename.replace(/'/g, "\\'")
   // Use spaces in query (they get encoded properly by encodeURIComponent), not + signs
-  const searchQuery = `'${parentFolderId}' in parents and name='${escapedFilename}'`
+  // Also add trashed=false to avoid finding trashed files
+  const searchQuery = `'${parentFolderId}' in parents and name='${escapedFilename}' and trashed=false`
+
+  console.log('Checking for existing file with query:', searchQuery)
+
   const searchResponse = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(searchQuery)}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     {
@@ -818,13 +868,16 @@ async function uploadToDrive(blob, filename, parentFolderId) {
   let existingFileId = null
   if (searchResponse.ok) {
     const searchData = await searchResponse.json()
+    console.log('File search response:', searchData)
     if (searchData.files && searchData.files.length > 0) {
       existingFileId = searchData.files[0].id
+      console.log('Found existing file to update:', existingFileId)
     }
   }
 
   if (existingFileId) {
     // Update existing file
+    console.log('Updating existing file:', existingFileId)
     const form = new FormData()
     form.append('metadata', new Blob([JSON.stringify({ mimeType: 'application/pdf' })], { type: 'application/json' }))
     form.append('file', blob)
@@ -845,10 +898,11 @@ async function uploadToDrive(blob, filename, parentFolderId) {
     }
 
     const result = await response.json()
-    console.log('File updated successfully:', result.id)
+    console.log('File updated successfully:', result)
     return result
   } else {
     // Create new file
+    console.log('Creating new file in folder:', parentFolderId)
     const metadata = {
       name: filename,
       parents: [parentFolderId],
@@ -875,7 +929,7 @@ async function uploadToDrive(blob, filename, parentFolderId) {
     }
 
     const result = await response.json()
-    console.log('File created successfully:', result.id)
+    console.log('File created successfully:', result)
     return result
   }
 }
@@ -914,6 +968,7 @@ onMounted(async () => {
   console.log('Saved token exists:', !!savedToken)
   console.log('Saved email:', savedEmail)
   console.log('Token expiry:', tokenExpiry ? new Date(parseInt(tokenExpiry)).toISOString() : 'not set')
+  console.log('Current time:', new Date().toISOString())
 
   if (savedToken) {
     // Check if token has expired locally first
@@ -952,7 +1007,8 @@ onMounted(async () => {
         }
       } else {
         // Token invalid, clear it
-        console.log('Token invalid (response not ok), clearing...')
+        const errorText = await response.text()
+        console.log('Token invalid (response not ok), status:', response.status, 'error:', errorText)
         localStorage.removeItem('google_access_token')
         localStorage.removeItem('google_token_expiry')
         localStorage.removeItem('google_user_email')
