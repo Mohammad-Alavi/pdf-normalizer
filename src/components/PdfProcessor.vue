@@ -434,6 +434,9 @@ async function processFiles() {
   try {
     const folderId = extractFolderId(driveLink.value)
 
+    // Get or create the "Normalized" subfolder
+    const normalizedFolderId = await getOrCreateNormalizedFolder(folderId)
+
     // Fetch files from Google Drive
     const pdfFiles = await fetchDriveFiles(folderId)
 
@@ -470,10 +473,10 @@ async function processFiles() {
         file.processedSize = processedBytes.byteLength
         file.blob = new Blob([processedBytes], { type: 'application/pdf' })
 
-        // Upload back to Drive
+        // Upload back to Drive (to Normalized folder)
         file.status = 'uploading'
         file.statusText = 'Uploading to Drive...'
-        await uploadToDrive(file.blob, `normalized_${file.name}`, folderId)
+        await uploadToDrive(file.blob, file.name, normalizedFolderId)
 
         file.status = 'done'
         file.statusText = `Complete (${formatBytes(file.originalSize)} \u2192 ${formatBytes(file.processedSize)})`
@@ -528,6 +531,49 @@ async function fetchDriveFiles(folderId) {
     if (!name.endsWith('.pdf')) return false
     return true
   })
+}
+
+async function getOrCreateNormalizedFolder(parentFolderId) {
+  // First, check if "Normalized" folder already exists
+  const searchResponse = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q='${parentFolderId}'+in+parents+and+name='Normalized'+and+mimeType='application/vnd.google-apps.folder'&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    {
+      headers: { Authorization: `Bearer ${accessToken.value}` }
+    }
+  )
+
+  if (searchResponse.ok) {
+    const searchData = await searchResponse.json()
+    if (searchData.files && searchData.files.length > 0) {
+      // Folder exists, return its ID
+      return searchData.files[0].id
+    }
+  }
+
+  // Folder doesn't exist, create it
+  const createResponse = await fetch(
+    'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken.value}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name: 'Normalized',
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentFolderId]
+      })
+    }
+  )
+
+  if (!createResponse.ok) {
+    const errorData = await createResponse.json().catch(() => ({}))
+    throw new Error(`Failed to create Normalized folder: ${errorData.error?.message || 'Unknown error'}`)
+  }
+
+  const createData = await createResponse.json()
+  return createData.id
 }
 
 async function downloadFile(fileId) {
@@ -634,7 +680,8 @@ async function uploadToDrive(blob, filename, parentFolderId) {
   )
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))    throw new Error(errorData.error?.message || 'Failed to upload file to Drive')
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.error?.message || 'Failed to upload file to Drive')
   }
 
   return await response.json()
@@ -647,7 +694,7 @@ async function downloadAll() {
 
   for (const file of processedFiles.value) {
     if (file.blob) {
-      zip.file(`normalized_${file.name}`, file.blob)
+      zip.file(file.name, file.blob)
     }
   }
 
