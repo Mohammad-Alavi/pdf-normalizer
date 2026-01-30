@@ -337,7 +337,7 @@ const pageSizes = [
 
 // Google OAuth Config
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
-const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile'
+const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile'
 
 // Computed
 const canProcess = computed(() => {
@@ -587,6 +587,21 @@ async function processFiles() {
       addLog('success', 'Found existing Normalized folder structure', `Main: ${normalizedFolderId}, Texts: ${textsFolderId}, Sheets: ${sheetsFolderId}`)
     }
 
+    // Get or create the master Google Sheet for all invoice data
+    addLog('info', 'Checking for master Invoice Data sheet...')
+    let masterSheetId = null
+    try {
+      const { spreadsheetId, created: sheetCreated } = await getOrCreateMasterSheet(sheetsFolderId)
+      masterSheetId = spreadsheetId
+      if (sheetCreated) {
+        addLog('success', 'Created new master Invoice Data sheet', `Sheet ID: ${spreadsheetId}`)
+      } else {
+        addLog('success', 'Found existing master Invoice Data sheet', `Sheet ID: ${spreadsheetId}`)
+      }
+    } catch (sheetErr) {
+      addLog('warning', 'Could not create/find master sheet, will skip data aggregation', sheetErr.message)
+    }
+
     // Set the link to open the folder
     normalizedFolderLink.value = `https://drive.google.com/drive/folders/${normalizedFolderId}`
 
@@ -675,6 +690,22 @@ async function processFiles() {
             addLog('success', `Uploaded Excel file to Sheets folder: ${xlsxFilename}`, `File ID: ${xlsxUploadResult.id}`)
           } catch (xlsxErr) {
             addLog('warning', `Failed to upload Excel file for ${file.name}`, xlsxErr.message)
+          }
+
+          // Append invoice data to master Google Sheet
+          if (masterSheetId) {
+            try {
+              const invoiceData = parseInvoiceText(extractedText)
+              if (invoiceData && invoiceData.items && invoiceData.items.length > 0) {
+                addLog('info', `Appending ${invoiceData.items.length} row(s) to master sheet for ${file.name}`)
+                const appendResult = await appendToMasterSheet(masterSheetId, invoiceData)
+                addLog('success', `Appended ${appendResult.updatedRows} row(s) to master Invoice Data sheet`)
+              } else {
+                addLog('info', `No invoice items found in ${file.name}, skipping master sheet append`)
+              }
+            } catch (appendErr) {
+              addLog('warning', `Failed to append data to master sheet for ${file.name}`, appendErr.message)
+            }
           }
         }
 
@@ -826,6 +857,142 @@ async function getOrCreateNormalizedFolder(parentFolderId) {
     sheetsFolderId: sheetsResult.folderId,
     created: normalizedResult.created
   }
+}
+
+// Get or create the master "Invoice Data" Google Sheet in the Sheets folder
+async function getOrCreateMasterSheet(sheetsFolderId) {
+  const sheetName = 'Invoice Data'
+
+  // Search for existing Google Sheet with this name in the Sheets folder
+  const query = `'${sheetsFolderId}' in parents and name='${sheetName}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`
+
+  const searchResponse = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    {
+      headers: { Authorization: `Bearer ${accessToken.value}` }
+    }
+  )
+
+  if (searchResponse.ok) {
+    const searchData = await searchResponse.json()
+    if (searchData.files && searchData.files.length > 0) {
+      // Found existing master sheet
+      return { spreadsheetId: searchData.files[0].id, created: false }
+    }
+  }
+
+  // Create new Google Sheet
+  const createResponse = await fetch(
+    'https://sheets.googleapis.com/v4/spreadsheets',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken.value}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        properties: {
+          title: sheetName
+        },
+        sheets: [{
+          properties: {
+            title: 'Invoice Data',
+            rightToLeft: true
+          }
+        }]
+      })
+    }
+  )
+
+  if (!createResponse.ok) {
+    const errorData = await createResponse.json().catch(() => ({}))
+    throw new Error(`Failed to create master sheet: ${errorData.error?.message || 'Unknown error'}`)
+  }
+
+  const sheetData = await createResponse.json()
+  const spreadsheetId = sheetData.spreadsheetId
+
+  // Move the sheet to the Sheets folder
+  // First, get the current parent
+  const fileResponse = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=parents`,
+    {
+      headers: { Authorization: `Bearer ${accessToken.value}` }
+    }
+  )
+
+  if (fileResponse.ok) {
+    const fileData = await fileResponse.json()
+    const previousParents = fileData.parents ? fileData.parents.join(',') : ''
+
+    // Move to Sheets folder
+    await fetch(
+      `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?addParents=${sheetsFolderId}&removeParents=${previousParents}`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${accessToken.value}` }
+      }
+    )
+  }
+
+  // Add header row to the new sheet
+  const headers = [
+    ['شماره', 'تاریخ', 'نام شخص حقیقی / حقوقی', 'ردیف', 'شرح کالا یا خدمات', 'مبلغ کل پس از تخفیف', 'جمع مالیات و عوارض']
+  ]
+
+  await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A1:G1?valueInputOption=RAW`,
+    {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken.value}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ values: headers })
+    }
+  )
+
+  return { spreadsheetId, created: true }
+}
+
+// Append invoice data rows to the master Google Sheet
+async function appendToMasterSheet(spreadsheetId, invoiceData) {
+  if (!invoiceData || !invoiceData.items || invoiceData.items.length === 0) {
+    return { updatedRows: 0 }
+  }
+
+  // Prepare rows to append
+  // Columns: شماره | تاریخ | نام شخص حقیقی / حقوقی | ردیف | شرح کالا یا خدمات | مبلغ کل پس از تخفیف | جمع مالیات و عوارض
+  const rows = invoiceData.items.map(item => [
+    invoiceData.invoiceNumber || '',
+    invoiceData.date || '',
+    invoiceData.buyerName || '',
+    item.rowNumber || '',
+    item.description || '',
+    item.totalAfterDiscount || '',
+    item.taxAndDuties || ''
+  ])
+
+  // Append to the sheet
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A:G:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken.value}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ values: rows })
+    }
+  )
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(`Failed to append to master sheet: ${errorData.error?.message || 'Unknown error'}`)
+  }
+
+  const result = await response.json()
+  return { updatedRows: rows.length, updates: result.updates }
 }
 
 async function downloadFile(fileId) {
