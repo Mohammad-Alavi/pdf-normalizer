@@ -599,7 +599,16 @@ async function processFiles() {
         addLog('success', 'Found existing master Invoice Data sheet', `Sheet ID: ${spreadsheetId}`)
       }
     } catch (sheetErr) {
-      addLog('warning', 'Could not create/find master sheet, will skip data aggregation', sheetErr.message)
+      // Check if this is a permission/scope error
+      const isAuthError = sheetErr.message?.includes('403') ||
+                          sheetErr.message?.includes('permission') ||
+                          sheetErr.message?.includes('scope') ||
+                          sheetErr.message?.includes('access')
+      if (isAuthError) {
+        addLog('warning', 'Sheets API permission denied - please sign out and sign back in to grant new permissions', sheetErr.message)
+      } else {
+        addLog('warning', 'Could not create/find master sheet, will skip data aggregation', sheetErr.message)
+      }
     }
 
     // Set the link to open the folder
@@ -987,8 +996,7 @@ async function appendToMasterSheet(spreadsheetId, invoiceData) {
   )
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(`Failed to append to master sheet: ${errorData.error?.message || 'Unknown error'}`)
+    const errorData = await response.json().catch(() => ({}))    throw new Error(`Failed to append to master sheet: ${errorData.error?.message || 'Unknown error'}`)
   }
 
   const result = await response.json()
@@ -1250,20 +1258,89 @@ function parseInvoiceText(text) {
   // 3. Extract buyer's نام شخص حقیقی / حقوقی
   // There are TWO instances in the text: one after مشخصات فروشنده (seller) and one after مشخصات خریدار (buyer)
   // We want the one from the buyer section (مشخصات خریدار)
+  // Note: Due to RTL extraction, the value might appear before OR after the label
   const buyerSectionStart = normalizedText.indexOf('مشخصات خریدار')
   if (buyerSectionStart !== -1) {
     const buyerSection = normalizedText.substring(buyerSectionStart)
-    // Find "نام شخص حقیقی / حقوقی:" and extract the value after it
-    const labelIndex = buyerSection.indexOf('نام شخص حقیقی / حقوقی')
-    if (labelIndex !== -1) {
-      // Get text after the label
-      const afterLabel = buyerSection.substring(labelIndex + 'نام شخص حقیقی / حقوقی'.length)
-      // Skip any colons or spaces, then get the value until newline
-      const colonMatch = afterLabel.match(/^[:\s]*([^\n]+)/)
-      if (colonMatch && colonMatch[1]) {
-        result.buyerName = colonMatch[1].trim()
+
+    // Try multiple label variations (different character forms)
+    const labelVariations = [
+      'نام شخص حقیقی / حقوقی',
+      'نام شخص حقیقی/ حقوقی',
+      'نام شخص حقیقی /حقوقی',
+      'نام شخص حقیقی/حقوقی',
+      'نام شخص حقيقي / حقوقي',  // Arabic ي instead of Persian ی
+      'نام شخص حقيقى / حقوقى'   // Different form of ی
+    ]
+
+    let foundBuyerName = ''
+
+    for (const label of labelVariations) {
+      const labelIndex = buyerSection.indexOf(label)
+      if (labelIndex !== -1) {
+        // Try Pattern 1: Value AFTER label (standard LTR extraction)
+        // Format: "نام شخص حقیقی / حقوقی: VALUE" or "نام شخص حقیقی / حقوقی VALUE"
+        const afterLabel = buyerSection.substring(labelIndex + label.length)
+        const afterMatch = afterLabel.match(/^[:\s]*([^\n:]+)/)
+        if (afterMatch && afterMatch[1] && afterMatch[1].trim().length > 2) {
+          // Check it's not another field label
+          const value = afterMatch[1].trim()
+          if (!value.includes('شناسه') && !value.includes('کد') && !value.includes('شماره')) {
+            foundBuyerName = value
+            break
+          }
+        }
+
+        // Try Pattern 2: Value BEFORE label (RTL text extraction)
+        // Format: "VALUE :نام شخص حقیقی / حقوقی" or "VALUE نام شخص حقیقی / حقوقی"
+        const beforeLabel = buyerSection.substring(0, labelIndex)
+        // Look for the last meaningful text before the label (Persian/Arabic text or mixed)
+        const beforeMatch = beforeLabel.match(/([^\n:]+?)[:\s]*$/)
+        if (beforeMatch && beforeMatch[1] && beforeMatch[1].trim().length > 2) {
+          const value = beforeMatch[1].trim()
+          // Check it's not another field label or number
+          if (!value.includes('شناسه') && !value.includes('کد') && !value.includes('شماره') &&
+              !value.match(/^\d+$/) && value.length > 2) {
+            foundBuyerName = value
+            break
+          }
+        }
+
+        // Try Pattern 3: Look for the line containing the label and extract around it
+        const lines = buyerSection.split('\n')
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes(label)) {
+            // Check the same line for value (might be separated by spaces)
+            const lineWithoutLabel = lines[i].replace(label, '').replace(/[:\s]+/g, ' ').trim()
+            if (lineWithoutLabel.length > 2 && !lineWithoutLabel.match(/^\d+$/)) {
+              foundBuyerName = lineWithoutLabel
+              break
+            }
+            // Check previous line (RTL document might have value on line above)
+            if (i > 0 && lines[i-1].trim().length > 2) {
+              const prevLine = lines[i-1].trim()
+              if (!prevLine.includes('مشخصات') && !prevLine.match(/^\d+$/)) {
+                foundBuyerName = prevLine
+                break
+              }
+            }
+            // Check next line
+            if (i < lines.length - 1 && lines[i+1].trim().length > 2) {
+              const nextLine = lines[i+1].trim()
+              if (!nextLine.includes('شناسه') && !nextLine.includes('کد')) {
+                foundBuyerName = nextLine
+                break
+              }
+            }
+            break
+          }
+        }
+
+        if (foundBuyerName) break
       }
     }
+
+    result.buyerName = foundBuyerName
   }
 
   // 4. Parse table rows
