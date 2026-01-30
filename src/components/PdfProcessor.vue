@@ -1104,15 +1104,32 @@ function parseInvoiceText(text) {
   const buyerSectionStart = normalizedText.indexOf('مشخصات خریدار')
   if (buyerSectionStart !== -1) {
     const buyerSection = normalizedText.substring(buyerSectionStart)
-    // Find نام شخص حقیقی / حقوقی: value in the buyer section
-    const buyerNameMatch = buyerSection.match(/نام شخص حقیقی \/ حقوقی[:\s]*([^]+?)(?:فکس|تلفن|کد پستی|نشانی کامل|$)/)
-    if (buyerNameMatch) {
-      let buyerName = buyerNameMatch[1].trim()
-      // Clean up - remove any trailing colons or separators
-      buyerName = buyerName.replace(/[:\s،,]+$/, '').trim()
-      // Remove any text that looks like the next field label
-      buyerName = buyerName.split(/\s*(?:فکس|تلفن|کد پستی|نشانی)/)[0].trim()
-      result.buyerName = buyerName
+
+    // Try multiple patterns to extract buyer name - the slash and spacing can vary
+    const buyerNamePatterns = [
+      // Pattern 1: Standard format with various slash types
+      /نام شخص حقیقی\s*[\/\u002F\u2044\u2215]\s*حقوقی\s*:?\s*([^\n]+?)(?:\s*(?:فکس|تلفن|کد پستی|نشانی)|$)/,
+      // Pattern 2: Just look for "نام شخص" followed by content after colon
+      /نام شخص[^:]*:\s*([^\n]+?)(?:\s*(?:فکس|تلفن|کد پستی|نشانی)|$)/,
+      // Pattern 3: RTL format where value comes before label (value :label)
+      /([آ-ی\s\-\d]+?)\s*:\s*نام شخص حقیقی/,
+      // Pattern 4: Look for Persian name pattern after "حقوقی"
+      /حقوقی\s*:?\s*([آ-ی][آ-ی\s\-]+(?:\s*-\s*[آ-ی\s]+)?)/
+    ]
+
+    for (const pattern of buyerNamePatterns) {
+      const buyerNameMatch = buyerSection.match(pattern)
+      if (buyerNameMatch && buyerNameMatch[1]) {
+        let buyerName = buyerNameMatch[1].trim()
+        // Clean up - remove any trailing colons, separators, or field labels
+        buyerName = buyerName.replace(/[:\s،,]+$/, '').trim()
+        buyerName = buyerName.split(/\s*(?:فکس|تلفن|کد پستی|نشانی|کد اقتصادی|شماره ملی|شناسه)/)[0].trim()
+        // Skip if it's empty or just whitespace
+        if (buyerName && buyerName.length > 2) {
+          result.buyerName = buyerName
+          break
+        }
+      }
     }
   }
 
