@@ -660,31 +660,71 @@ function getPageDimensions(size) {
 }
 
 async function uploadToDrive(blob, filename, parentFolderId) {
-  const metadata = {
-    name: filename,
-    parents: [parentFolderId],
-    mimeType: 'application/pdf'
-  }
-
-  const form = new FormData()
-  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }))
-  form.append('file', blob)
-
-  const response = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+  // First, check if file already exists in the folder
+  const searchResponse = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q='${parentFolderId}'+in+parents+and+name='${filename.replace(/'/g, "\\'")}'&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken.value}` },
-      body: form
+      headers: { Authorization: `Bearer ${accessToken.value}` }
     }
   )
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.error?.message || 'Failed to upload file to Drive')
+  let existingFileId = null
+  if (searchResponse.ok) {
+    const searchData = await searchResponse.json()
+    if (searchData.files && searchData.files.length > 0) {
+      existingFileId = searchData.files[0].id
+    }
   }
 
-  return await response.json()
+  if (existingFileId) {
+    // Update existing file
+    const form = new FormData()
+    form.append('metadata', new Blob([JSON.stringify({ mimeType: 'application/pdf' })], { type: 'application/json' }))
+    form.append('file', blob)
+
+    const response = await fetch(
+      `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${accessToken.value}` },
+        body: form
+      }
+    )
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new Error(errorData.error?.message || 'Failed to update file on Drive')
+    }
+
+    return await response.json()
+  } else {
+    // Create new file
+    const metadata = {
+      name: filename,
+      parents: [parentFolderId],
+      mimeType: 'application/pdf'
+    }
+
+    const form = new FormData()
+    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }))
+    form.append('file', blob)
+
+    const response = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken.value}` },
+        body: form
+      }
+    )
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new Error(errorData.error?.message || 'Failed to upload file to Drive')
+    }
+
+    return await response.json()
+  }
 }
 
 async function downloadAll() {
