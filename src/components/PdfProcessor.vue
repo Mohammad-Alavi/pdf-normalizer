@@ -247,7 +247,7 @@
                   {{ log.type === 'success' ? 'mdi-check-circle' : log.type === 'error' ? 'mdi-alert-circle' : log.type === 'warning' ? 'mdi-alert' : 'mdi-information' }}
                 </v-icon>
                 <span>{{ log.message }}</span>
-                <span v-if="log.details" class="text-grey-darken-1 ml-2">\u2014 {{ log.details }}</span>
+                <span v-if="log.details" class="text-grey-darken-1 ml-2">— {{ log.details }}</span>
               </div>
             </div>
             <v-btn
@@ -427,22 +427,36 @@ async function authenticateGoogle() {
     const tokenClient = window.google.accounts.oauth2.initTokenClient({
       client_id: CLIENT_ID,
       scope: SCOPES,
-      callback: (response) => {
+      callback: async (response) => {
         if (response.error) {
           error.value = 'Authentication failed: ' + response.error
           isAuthenticating.value = false
           return
         }
+        console.log('OAuth callback received, token expires_in:', response.expires_in)
+
         accessToken.value = response.access_token
         // Save token to localStorage for persistence across refreshes
         localStorage.setItem('google_access_token', response.access_token)
         // Also save the expiration time (Google tokens expire in ~1 hour)
-        localStorage.setItem('google_token_expiry', String(Date.now() + (response.expires_in * 1000)))
+        const expiryTime = Date.now() + (response.expires_in * 1000)
+        localStorage.setItem('google_token_expiry', String(expiryTime))
+        console.log('Token saved, expires at:', new Date(expiryTime).toISOString())
+
         isAuthenticated.value = true
-        // Fetch and save user info
-        fetchUserInfo().then(() => {
-          localStorage.setItem('google_user_email', userEmail.value)
-        })
+
+        // Fetch and save user info - await to ensure it completes
+        try {
+          await fetchUserInfo()
+          console.log('User email fetched:', userEmail.value)
+          if (userEmail.value) {
+            localStorage.setItem('google_user_email', userEmail.value)
+            console.log('Email saved to localStorage:', userEmail.value)
+          }
+        } catch (err) {
+          console.error('Failed to fetch user info:', err)
+        }
+
         isAuthenticating.value = false
       }
     })
@@ -472,11 +486,18 @@ function loadGoogleScript() {
 
 async function fetchUserInfo() {
   try {
+    console.log('Fetching user info...')
     const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${accessToken.value}` }
     })
+    if (!response.ok) {
+      console.error('Failed to fetch user info, status:', response.status)
+      return
+    }
     const data = await response.json()
-    userEmail.value = data.email
+    console.log('User info response:', data)
+    userEmail.value = data.email || ''
+    console.log('Set userEmail to:', userEmail.value)
   } catch (err) {
     console.error('Failed to fetch user info:', err)
   }
@@ -562,7 +583,7 @@ async function processFiles() {
 
         const sizeChange = file.originalSize - file.processedSize
         const sizeChangeText = sizeChange > 0 ? `Reduced by ${formatBytes(sizeChange)}` : sizeChange < 0 ? `Increased by ${formatBytes(Math.abs(sizeChange))}` : 'No size change'
-        addLog('success', `Processed: ${file.name}`, `${formatBytes(file.originalSize)} \u2192 ${formatBytes(file.processedSize)} (${sizeChangeText})`)
+        addLog('success', `Processed: ${file.name}`, `${formatBytes(file.originalSize)} → ${formatBytes(file.processedSize)} (${sizeChangeText})`)
 
         // Upload back to Drive (to Normalized folder)
         file.status = 'uploading'
@@ -572,7 +593,7 @@ async function processFiles() {
         addLog('success', `Uploaded to Drive: ${file.name}`)
 
         file.status = 'done'
-        file.statusText = `Complete (${formatBytes(file.originalSize)} \u2192 ${formatBytes(file.processedSize)})`
+        file.statusText = `Complete (${formatBytes(file.originalSize)} → ${formatBytes(file.processedSize)})`
         processedFiles.value.push(file)
 
       } catch (err) {
@@ -605,7 +626,8 @@ async function processFiles() {
 
 async function fetchDriveFiles(folderId, normalizedFolderId = null) {
   // Build query to get PDFs from the main folder only (not from Normalized subfolder)
-  let query = `'${folderId}'+in+parents+and+mimeType='application/pdf'`
+  // Use spaces in query (they get encoded properly), not + signs
+  const query = `'${folderId}' in parents and mimeType='application/pdf'`
 
   const response = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,size,parents)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
@@ -656,8 +678,9 @@ async function fetchDriveFiles(folderId, normalizedFolderId = null) {
 
 async function getOrCreateNormalizedFolder(parentFolderId) {
   // First, check if "Normalized" folder already exists
+  const folderQuery = `'${parentFolderId}' in parents and name='Normalized' and mimeType='application/vnd.google-apps.folder'`
   const searchResponse = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q='${parentFolderId}'+in+parents+and+name='Normalized'+and+mimeType='application/vnd.google-apps.folder'&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     {
       headers: { Authorization: `Bearer ${accessToken.value}` }
     }
@@ -783,8 +806,10 @@ function getPageDimensions(size) {
 async function uploadToDrive(blob, filename, parentFolderId) {
   // First, check if file already exists in the folder
   const escapedFilename = filename.replace(/'/g, "\\'").replace(/\\/g, "\\\\")
+  // Use spaces in query (they get encoded properly by encodeURIComponent), not + signs
+  const searchQuery = `'${parentFolderId}' in parents and name='${escapedFilename}'`
   const searchResponse = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q='${parentFolderId}'+in+parents+and+name='${escapedFilename}'&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(searchQuery)}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     {
       headers: { Authorization: `Bearer ${accessToken.value}` }
     }
@@ -879,14 +904,21 @@ async function downloadAll() {
 
 // Initialize
 onMounted(async () => {
+  console.log('PdfProcessor mounted, checking for saved auth...')
+
   // Check for existing token in localStorage
   const savedToken = localStorage.getItem('google_access_token')
   const tokenExpiry = localStorage.getItem('google_token_expiry')
   const savedEmail = localStorage.getItem('google_user_email')
 
+  console.log('Saved token exists:', !!savedToken)
+  console.log('Saved email:', savedEmail)
+  console.log('Token expiry:', tokenExpiry ? new Date(parseInt(tokenExpiry)).toISOString() : 'not set')
+
   if (savedToken) {
     // Check if token has expired locally first
     if (tokenExpiry && Date.now() > parseInt(tokenExpiry)) {
+      console.log('Token expired locally, clearing...')
       // Token expired, clear it
       localStorage.removeItem('google_access_token')
       localStorage.removeItem('google_token_expiry')
@@ -897,15 +929,20 @@ onMounted(async () => {
     // Set the saved email immediately for better UX
     if (savedEmail) {
       userEmail.value = savedEmail
+      console.log('Set email from localStorage:', savedEmail)
     }
 
     // Verify token is still valid with Google
     try {
+      console.log('Verifying token with Google...')
       const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
         headers: { Authorization: `Bearer ${savedToken}` }
       })
+      console.log('Token verification response status:', response.status)
+
       if (response.ok) {
         const data = await response.json()
+        console.log('Token valid, user email from API:', data.email)
         accessToken.value = savedToken
         isAuthenticated.value = true
         userEmail.value = data.email || savedEmail || ''
@@ -915,6 +952,7 @@ onMounted(async () => {
         }
       } else {
         // Token invalid, clear it
+        console.log('Token invalid (response not ok), clearing...')
         localStorage.removeItem('google_access_token')
         localStorage.removeItem('google_token_expiry')
         localStorage.removeItem('google_user_email')
@@ -928,6 +966,8 @@ onMounted(async () => {
       localStorage.removeItem('google_user_email')
       userEmail.value = ''
     }
+  } else {
+    console.log('No saved token found')
   }
 })
 </script>
