@@ -439,7 +439,7 @@ import Tesseract from 'tesseract.js'
 import * as pdfjsLib from 'pdfjs-dist'
 import * as XLSX from 'xlsx'
 
-// Configure PDF.js worker - use jsdelivr CDN
+// Configure PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
 
 // State
@@ -489,10 +489,7 @@ const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com
 
 // Computed
 const canProcess = computed(() => {
-  return driveLink.value &&
-         !linkError.value &&
-         extractFolderId(driveLink.value) &&
-         isAuthenticated.value
+  return driveLink.value && !linkError.value && extractFolderId(driveLink.value) && isAuthenticated.value
 })
 
 const progressText = computed(() => {
@@ -505,15 +502,10 @@ const progressText = computed(() => {
   return `Completed: ${successful} of ${files.value.length} files processed successfully`
 })
 
-// Methods
+// Helper functions
 function extractFolderId(url) {
   if (!url) return null
-  // Handle various Google Drive URL formats
-  const patterns = [
-    /\/folders\/([a-zA-Z0-9_-]+)/,
-    /id=([a-zA-Z0-9_-]+)/,
-    /^([a-zA-Z0-9_-]{25,})/
-  ]
+  const patterns = [/\/folders\/([a-zA-Z0-9_-]+)/, /id=([a-zA-Z0-9_-]+)/, /^([a-zA-Z0-9_-]{25,})/]
   for (const pattern of patterns) {
     const match = url.match(pattern)
     if (match) return match[1]
@@ -526,47 +518,38 @@ function validateLink() {
     linkError.value = ''
     return
   }
-  const folderId = extractFolderId(driveLink.value)
-  if (!folderId) {
-    linkError.value = 'Invalid Google Drive folder link'
-  } else {
-    linkError.value = ''
-  }
+  linkError.value = extractFolderId(driveLink.value) ? '' : 'Invalid Google Drive folder link'
 }
 
 function getFileStatusIcon(status) {
-  switch (status) {
-    case 'pending': return 'mdi-clock-outline'
-    case 'downloading': return 'mdi-download'
-    case 'processing': return 'mdi-cog mdi-spin'
-    case 'uploading': return 'mdi-upload'
-    case 'done': return 'mdi-check-circle'
-    case 'error': return 'mdi-alert-circle'
-    default: return 'mdi-file'
+  const icons = {
+    pending: 'mdi-clock-outline',
+    downloading: 'mdi-download',
+    processing: 'mdi-cog mdi-spin',
+    uploading: 'mdi-upload',
+    done: 'mdi-check-circle',
+    error: 'mdi-alert-circle'
   }
+  return icons[status] || 'mdi-file'
 }
 
 function getFileStatusColor(status) {
-  switch (status) {
-    case 'pending': return 'grey'
-    case 'downloading': return 'info'
-    case 'processing': return 'warning'
-    case 'uploading': return 'info'
-    case 'done': return 'success'
-    case 'error': return 'error'
-    default: return 'grey'
+  const colors = {
+    pending: 'grey',
+    downloading: 'info',
+    processing: 'warning',
+    uploading: 'info',
+    done: 'success',
+    error: 'error'
   }
+  return colors[status] || 'grey'
 }
 
 function getSizeChange(original, processed) {
   const change = ((original - processed) / original * 100).toFixed(0)
-  if (change > 0) {
-    return { text: `Saved ${change}%`, color: 'success' }
-  } else if (change < 0) {
-    return { text: `+${Math.abs(change)}%`, color: 'warning' }
-  } else {
-    return { text: 'No change', color: 'grey' }
-  }
+  if (change > 0) return { text: `Saved ${change}%`, color: 'success' }
+  if (change < 0) return { text: `+${Math.abs(change)}%`, color: 'warning' }
+  return { text: 'No change', color: 'grey' }
 }
 
 function formatBytes(bytes) {
@@ -578,11 +561,10 @@ function formatBytes(bytes) {
 }
 
 function addLog(type, message, details = null) {
-  const timestamp = new Date().toLocaleTimeString()
   processingLogs.value.push({
     id: Date.now(),
-    timestamp,
-    type, // 'info', 'success', 'warning', 'error'
+    timestamp: new Date().toLocaleTimeString(),
+    type,
     message,
     details
   })
@@ -594,22 +576,16 @@ function clearLogs() {
 
 async function copyLogs() {
   const logText = processingLogs.value.map(log => {
-    const prefix = log.type === 'success' ? '✓' : log.type === 'error' ? '✗' : log.type === 'warning' ? '⚠' : 'ℹ'
-    const details = log.details ? ` — ${log.details}` : ''
-    return `[${log.timestamp}] ${prefix} ${log.message}${details}`
+    const prefix = { success: '✓', error: '✗', warning: '⚠', info: 'ℹ' }[log.type] || 'ℹ'
+    return `[${log.timestamp}] ${prefix} ${log.message}${log.details ? ` — ${log.details}` : ''}`
   }).join('\n')
 
   try {
     await navigator.clipboard.writeText(logText)
-    // Show a brief success message
     const originalLogs = [...processingLogs.value]
     addLog('success', 'Logs copied to clipboard!')
-    // Remove the "copied" message after 2 seconds
-    setTimeout(() => {
-      processingLogs.value = originalLogs
-    }, 2000)
+    setTimeout(() => { processingLogs.value = originalLogs }, 2000)
   } catch (err) {
-    console.error('Failed to copy logs:', err)
     addLog('error', 'Failed to copy logs to clipboard')
   }
 }
@@ -620,9 +596,7 @@ async function authenticateGoogle() {
   error.value = ''
 
   try {
-    // Initialize Google Identity Services
     if (!window.google?.accounts?.oauth2) {
-      // Load Google Identity Services script
       await loadGoogleScript()
     }
 
@@ -638,17 +612,12 @@ async function authenticateGoogle() {
 
         accessToken.value = response.access_token
         localStorage.setItem('google_access_token', response.access_token)
-        const expiryTime = Date.now() + (response.expires_in * 1000)
-        localStorage.setItem('google_token_expiry', String(expiryTime))
-
+        localStorage.setItem('google_token_expiry', String(Date.now() + (response.expires_in * 1000)))
         isAuthenticated.value = true
 
-        // Fetch and save user info
         try {
           await fetchUserInfo()
-          if (userEmail.value) {
-            localStorage.setItem('google_user_email', userEmail.value)
-          }
+          if (userEmail.value) localStorage.setItem('google_user_email', userEmail.value)
         } catch (err) {
           console.error('Failed to fetch user info:', err)
         }
@@ -681,22 +650,12 @@ function loadGoogleScript() {
 }
 
 async function fetchUserInfo() {
-  try {
-    const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-      headers: { Authorization: `Bearer ${accessToken.value}` }
-    })
-
-    if (!response.ok) {
-      console.error('Failed to fetch user info:', response.status)
-      return null
-    }
-
+  const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    headers: { Authorization: `Bearer ${accessToken.value}` }
+  })
+  if (response.ok) {
     const data = await response.json()
     userEmail.value = data.email || ''
-    return data
-  } catch (err) {
-    console.error('Failed to fetch user info:', err)
-    return null
   }
 }
 
@@ -708,7 +667,16 @@ function signOut() {
   }
 }
 
-// File Processing
+function clearAuthData() {
+  accessToken.value = ''
+  isAuthenticated.value = false
+  userEmail.value = ''
+  localStorage.removeItem('google_access_token')
+  localStorage.removeItem('google_token_expiry')
+  localStorage.removeItem('google_user_email')
+}
+
+// Main processing function
 async function processFiles() {
   if (!canProcess.value) return
 
@@ -725,50 +693,33 @@ async function processFiles() {
     const folderId = extractFolderId(driveLink.value)
     addLog('info', 'Starting PDF processing', `Folder ID: ${folderId}`)
 
-    // Get or create the "Normalized" subfolder (for PDFs, Texts, Sheets)
+    // Get or create folder structure
     addLog('info', 'Checking for Normalized folder...')
     const { folderId: normalizedFolderId, textsFolderId, sheetsFolderId, created } = await getOrCreateNormalizedFolder(folderId)
+    addLog('success', created ? 'Created new Normalized folder structure' : 'Found existing Normalized folder structure')
 
-    if (created) {
-      addLog('success', 'Created new Normalized folder structure', `Main: ${normalizedFolderId}, Texts: ${textsFolderId}, Sheets: ${sheetsFolderId}`)
-    } else {
-      addLog('success', 'Found existing Normalized folder structure', `Main: ${normalizedFolderId}, Texts: ${textsFolderId}, Sheets: ${sheetsFolderId}`)
-    }
-
-    // Get or create the master Google Sheet for all invoice data
-    addLog('info', 'Checking for master Invoice Data sheet...')
+    // Get or create master Google Sheet
     let masterSheetId = null
     try {
+      addLog('info', 'Checking for master Invoice Data sheet...')
       const { spreadsheetId, created: sheetCreated } = await getOrCreateMasterSheet(sheetsFolderId)
       masterSheetId = spreadsheetId
-      if (sheetCreated) {
-        addLog('success', 'Created new master Invoice Data sheet', `Sheet ID: ${spreadsheetId}`)
-      } else {
-        addLog('success', 'Found existing master Invoice Data sheet', `Sheet ID: ${spreadsheetId}`)
-      }
+      addLog('success', sheetCreated ? 'Created new master Invoice Data sheet' : 'Found existing master Invoice Data sheet')
     } catch (sheetErr) {
-      // Check if this is a permission/scope error
-      const isAuthError = sheetErr.message?.includes('403') ||
-                          sheetErr.message?.includes('permission') ||
-                          sheetErr.message?.includes('scope') ||
-                          sheetErr.message?.includes('access') ||
-                          sheetErr.message?.includes('PERMISSION_DENIED')
-      if (isAuthError) {
+      if (sheetErr.message?.includes('403') || sheetErr.message?.includes('permission')) {
         addLog('error', 'Sheets API permission denied', sheetErr.message)
-        addLog('warning', 'To fix: 1) Go to Google Cloud Console and enable Google Sheets API', 'https://console.cloud.google.com/apis/library/sheets.googleapis.com')
-        addLog('warning', 'To fix: 2) Go to myaccount.google.com/permissions and revoke this app, then sign in again')
+        addLog('warning', 'To fix: Enable Google Sheets API and re-sign in')
       } else {
-        addLog('warning', 'Could not create/find master sheet, will skip data aggregation', sheetErr.message)
+        addLog('warning', 'Could not create/find master sheet', sheetErr.message)
       }
     }
 
-    // Set the link to open the Normalized folder
     normalizedFolderLink.value = `https://drive.google.com/drive/folders/${normalizedFolderId}`
 
-    // Fetch files from Google Drive (excluding files already in Normalized folder)
+    // Fetch PDF files
     addLog('info', 'Fetching PDF files from Google Drive...')
     const pdfFiles = await fetchDriveFiles(folderId, normalizedFolderId)
-    addLog('info', `Found ${pdfFiles.length} PDF file(s) to process`, pdfFiles.map(f => f.name).join(', '))
+    addLog('info', `Found ${pdfFiles.length} PDF file(s) to process`)
 
     if (pdfFiles.length === 0) {
       error.value = 'No PDF files found in the specified folder'
@@ -793,86 +744,55 @@ async function processFiles() {
       addLog('info', `Processing file ${i + 1}/${files.value.length}: ${file.name}`)
 
       try {
-        // Download
         file.status = 'downloading'
         file.statusText = 'Downloading...'
-        addLog('info', `Downloading: ${file.name}`)
         const pdfBytes = await downloadFile(file.id)
         file.originalSize = pdfBytes.byteLength
-        addLog('success', `Downloaded: ${file.name}`, `Size: ${formatBytes(file.originalSize)}`)
+        addLog('success', `Downloaded: ${file.name}`, formatBytes(file.originalSize))
 
-        // Process
         file.status = 'processing'
         file.statusText = 'Processing...'
-        addLog('info', `Processing PDF: ${file.name}`, `Options: OCR=${options.value.ocr}, Standardize=${options.value.standardize}, Compress=${options.value.compress}, PageSize=${options.value.pageSize}`)
-
-        const processResult = await processPdf(pdfBytes, file.name, (status) => {
-          file.statusText = status
-        })
-        const processedBytes = processResult.pdfBytes
-        const extractedText = processResult.extractedText
-
+        const { pdfBytes: processedBytes, extractedText } = await processPdf(pdfBytes, file.name, status => { file.statusText = status })
         file.processedSize = processedBytes.byteLength
         file.blob = new Blob([processedBytes], { type: 'application/pdf' })
 
-        const sizeChange = file.originalSize - file.processedSize
-        const sizeChangeText = sizeChange > 0 ? `Reduced by ${formatBytes(sizeChange)}` : sizeChange < 0 ? `Increased by ${formatBytes(Math.abs(sizeChange))}` : 'No size change'
-        addLog('success', `Processed: ${file.name}`, `${formatBytes(file.originalSize)} → ${formatBytes(file.processedSize)} (${sizeChangeText})`)
-
-        // Upload back to Drive (to Normalized folder)
         file.status = 'uploading'
         file.statusText = 'Uploading to Drive...'
-        addLog('info', `Uploading PDF to Drive: ${file.name}`)
-        const uploadResult = await uploadToDrive(file.blob, file.name, normalizedFolderId)
-        addLog('success', `Uploaded PDF to Drive: ${file.name}`, `File ID: ${uploadResult.id}`)
+        await uploadToDrive(file.blob, file.name, normalizedFolderId)
+        addLog('success', `Uploaded PDF: ${file.name}`)
 
-        // If text extraction was enabled and text was extracted, upload both TXT and XLSX files
-        if (options.value.ocr && extractedText && extractedText.trim()) {
-          const baseFilename = file.name.replace('.pdf', '').replace('.PDF', '')
+        // Handle extracted text
+        if (options.value.ocr && extractedText?.trim()) {
+          const baseFilename = file.name.replace(/\.pdf$/i, '')
 
-          // Upload TXT file to Texts subfolder
-          const textFilename = `${baseFilename}.txt`
-          const textBlob = new Blob([extractedText], { type: 'text/plain;charset=utf-8' })
-          addLog('info', `Uploading text file: ${textFilename}`, `${extractedText.length} characters`)
+          // Upload TXT
           try {
-            const textUploadResult = await uploadToDrive(textBlob, textFilename, textsFolderId, 'text/plain')
-            addLog('success', `Uploaded text file to Texts folder: ${textFilename}`, `File ID: ${textUploadResult.id}`)
-          } catch (textErr) {
-            addLog('warning', `Failed to upload text file for ${file.name}`, textErr.message)
+            const textBlob = new Blob([extractedText], { type: 'text/plain;charset=utf-8' })
+            await uploadToDrive(textBlob, `${baseFilename}.txt`, textsFolderId, 'text/plain')
+            addLog('success', `Uploaded text file: ${baseFilename}.txt`)
+          } catch (err) {
+            addLog('warning', `Failed to upload text file`, err.message)
           }
 
-          // Upload XLSX file to Sheets subfolder
-          const xlsxFilename = `${baseFilename}.xlsx`
+          // Upload XLSX
           try {
             const xlsxBlob = createExcelFromText(extractedText, file.name)
-            addLog('info', `Uploading Excel file: ${xlsxFilename}`)
-            const xlsxUploadResult = await uploadToDrive(xlsxBlob, xlsxFilename, sheetsFolderId, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-            addLog('success', `Uploaded Excel file to Sheets folder: ${xlsxFilename}`, `File ID: ${xlsxUploadResult.id}`)
-          } catch (xlsxErr) {
-            addLog('warning', `Failed to upload Excel file for ${file.name}`, xlsxErr.message)
+            await uploadToDrive(xlsxBlob, `${baseFilename}.xlsx`, sheetsFolderId, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            addLog('success', `Uploaded Excel file: ${baseFilename}.xlsx`)
+          } catch (err) {
+            addLog('warning', `Failed to upload Excel file`, err.message)
           }
 
-          // Append invoice data to master Google Sheet
+          // Append to master sheet
           if (masterSheetId) {
             try {
               const invoiceData = parseInvoiceText(extractedText, file.name)
-
-              // Log extracted data for debugging
-              addLog('info', `Parsed invoice data for ${file.name}:`,
-                `Invoice #: ${invoiceData?.invoiceNumber || '(empty)'}, ` +
-                `Date: ${invoiceData?.date || '(empty)'}, ` +
-                `Buyer: ${invoiceData?.buyerName || '(empty)'}, ` +
-                `Items: ${invoiceData?.items?.length || 0}`)
-
-              if (invoiceData && invoiceData.items && invoiceData.items.length > 0) {
-                addLog('info', `Appending ${invoiceData.items.length} row(s) to master sheet for ${file.name}`)
-                const appendResult = await appendToMasterSheet(masterSheetId, invoiceData)
-                addLog('success', `Appended ${appendResult.updatedRows} row(s) to master Invoice Data sheet`)
-              } else {
-                addLog('info', `No invoice items found in ${file.name}, skipping master sheet append`)
+              if (invoiceData?.items?.length > 0) {
+                await appendToMasterSheet(masterSheetId, invoiceData)
+                addLog('success', `Appended ${invoiceData.items.length} row(s) to master sheet`)
               }
-            } catch (appendErr) {
-              addLog('warning', `Failed to append data to master sheet for ${file.name}`, appendErr.message)
+            } catch (err) {
+              addLog('warning', `Failed to append to master sheet`, err.message)
             }
           }
         }
@@ -884,300 +804,174 @@ async function processFiles() {
       } catch (err) {
         file.status = 'error'
         file.statusText = err.message || 'Processing failed'
-        addLog('error', `Failed to process: ${file.name}`, err.message || 'Unknown error')
-        console.error(`Error processing ${file.name}:`, err)
+        addLog('error', `Failed to process: ${file.name}`, err.message)
       }
 
       progress.value = ((i + 1) / files.value.length) * 100
     }
 
     const successCount = files.value.filter(f => f.status === 'done').length
-    const errorCount = files.value.filter(f => f.status === 'error').length
 
-    // Process Excel template if master sheet exists and has data
+    // Process Excel template
     if (masterSheetId && successCount > 0) {
       try {
         addLog('info', 'Starting Excel template processing...')
-        const excelResult = await processExcelTemplate(folderId, masterSheetId)
-        if (excelResult) {
-          addLog('success', 'Excel template processing complete')
-        }
-      } catch (excelErr) {
-        addLog('warning', 'Failed to process Excel template', excelErr.message)
-        console.error('Excel template processing error:', excelErr)
+        await processExcelTemplate(folderId, masterSheetId)
+        addLog('success', 'Excel template processing complete')
+      } catch (err) {
+        addLog('warning', 'Failed to process Excel template', err.message)
       }
     }
 
     if (successCount > 0) {
-      successMessage.value = `Successfully processed ${successCount} files and uploaded to Google Drive!`
-      addLog('success', `Processing complete: ${successCount} succeeded, ${errorCount} failed`)
-    } else {
-      addLog('warning', 'No files were successfully processed')
+      successMessage.value = `Successfully processed ${successCount} files!`
+      addLog('success', `Processing complete: ${successCount} succeeded`)
     }
 
   } catch (err) {
-    error.value = err.message || 'An error occurred while processing files'
-    addLog('error', 'Processing failed', err.message || 'Unknown error')
+    error.value = err.message || 'An error occurred'
+    addLog('error', 'Processing failed', err.message)
   } finally {
     isProcessing.value = false
   }
 }
 
+// Google Drive API functions
 async function fetchDriveFiles(folderId, normalizedFolderId = null) {
-  // Build query to get PDFs from the main folder only (not from Normalized subfolder)
-  // Use spaces in query (they get encoded properly), not + signs
   const query = `'${folderId}' in parents and mimeType='application/pdf' and trashed=false`
-
   const response = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,size,parents)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
-    {
-      headers: { Authorization: `Bearer ${accessToken.value}` }
-    }
+    { headers: { Authorization: `Bearer ${accessToken.value}` } }
   )
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    const errorMessage = errorData.error?.message || `API Error ${response.status}`
-    throw new Error(`Failed to fetch files: ${errorMessage}`)
+    throw new Error(`Failed to fetch files: ${errorData.error?.message || response.status}`)
   }
 
   const data = await response.json()
-  const allFiles = data.files || []
-
-  // Filter out temp files, already normalized files, and files without .pdf extension
-  // Also de-duplicate by file ID
   const seenIds = new Set()
   const seenNames = new Set()
 
-  return allFiles.filter(file => {
-    // Skip if we've already seen this file ID
+  return (data.files || []).filter(file => {
     if (seenIds.has(file.id)) return false
     seenIds.add(file.id)
 
-    // Skip if we've already seen this filename (to avoid processing duplicates)
     const nameLower = file.name.toLowerCase()
     if (seenNames.has(nameLower)) return false
     seenNames.add(nameLower)
 
-    // Skip temp files
-    if (nameLower.startsWith('temp_') || nameLower.startsWith('temp-')) return false
-    // Skip already normalized files (with old prefix)
-    if (nameLower.startsWith('normalized_')) return false
-    // Only include files with .pdf extension
+    if (nameLower.startsWith('temp_') || nameLower.startsWith('normalized_')) return false
     if (!nameLower.endsWith('.pdf')) return false
-
-    // Skip files that are in the Normalized subfolder
-    if (normalizedFolderId && file.parents && file.parents.includes(normalizedFolderId)) {
-      return false
-    }
+    if (normalizedFolderId && file.parents?.includes(normalizedFolderId)) return false
 
     return true
   })
 }
 
-// Helper function to get or create a folder by name within a parent folder
 async function getOrCreateFolder(parentFolderId, folderName) {
-  const folderQuery = `'${parentFolderId}' in parents and name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
-
+  const query = `'${parentFolderId}' in parents and name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
   const searchResponse = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=files(id,name,parents)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
-    {
-      headers: { Authorization: `Bearer ${accessToken.value}` }
-    }
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,parents)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    { headers: { Authorization: `Bearer ${accessToken.value}` } }
   )
 
   if (searchResponse.ok) {
-    const searchData = await searchResponse.json()
-    if (searchData.files && searchData.files.length > 0) {
-      const foundFolder = searchData.files[0]
-      if (foundFolder.parents && foundFolder.parents.includes(parentFolderId)) {
-        return { folderId: foundFolder.id, created: false }
-      }
+    const data = await searchResponse.json()
+    if (data.files?.[0]?.parents?.includes(parentFolderId)) {
+      return { folderId: data.files[0].id, created: false }
     }
   }
 
-  // Folder doesn't exist, create it
   const createResponse = await fetch(
     'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true',
     {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken.value}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        name: folderName,
-        mimeType: 'application/vnd.google-apps.folder',
-        parents: [parentFolderId]
-      })
+      headers: { Authorization: `Bearer ${accessToken.value}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: folderName, mimeType: 'application/vnd.google-apps.folder', parents: [parentFolderId] })
     }
   )
 
   if (!createResponse.ok) {
     const errorData = await createResponse.json().catch(() => ({}))
-    throw new Error(`Failed to create ${folderName} folder: ${errorData.error?.message || 'Unknown error'}`)
+    throw new Error(`Failed to create folder: ${errorData.error?.message || 'Unknown error'}`)
   }
 
   const createData = await createResponse.json()
   return { folderId: createData.id, created: true }
 }
 
-// Get or create "Normalized" folder with Texts and Sheets subfolders
 async function getOrCreateNormalizedFolder(parentFolderId) {
-  // Get or create main Normalized folder
-  const normalizedResult = await getOrCreateFolder(parentFolderId, 'Normalized')
-  const normalizedFolderId = normalizedResult.folderId
-
-  // Get or create Texts subfolder
-  const textsResult = await getOrCreateFolder(normalizedFolderId, 'Texts')
-
-  // Get or create Sheets subfolder
-  const sheetsResult = await getOrCreateFolder(normalizedFolderId, 'Sheets')
-
-  return {
-    folderId: normalizedFolderId,
-    textsFolderId: textsResult.folderId,
-    sheetsFolderId: sheetsResult.folderId,
-    created: normalizedResult.created
-  }
+  const normalized = await getOrCreateFolder(parentFolderId, 'Normalized')
+  const texts = await getOrCreateFolder(normalized.folderId, 'Texts')
+  const sheets = await getOrCreateFolder(normalized.folderId, 'Sheets')
+  return { folderId: normalized.folderId, textsFolderId: texts.folderId, sheetsFolderId: sheets.folderId, created: normalized.created }
 }
 
-// Get or create "Processed" folder structure: Processed/{companyId}/{year}/Mostanadat
 async function getOrCreateProcessedStructure(parentFolderId) {
-  const companyId = excelSettings.value.companyId
-  const year = excelSettings.value.year
-
-  // Get or create main Processed folder
-  const processedResult = await getOrCreateFolder(parentFolderId, 'Processed')
-  const processedFolderId = processedResult.folderId
-
-  // Get or create company ID subfolder (e.g., "10260538003")
-  const companyResult = await getOrCreateFolder(processedFolderId, companyId)
-  const companyFolderId = companyResult.folderId
-
-  // Get or create year subfolder (e.g., "1403")
-  const yearResult = await getOrCreateFolder(companyFolderId, year)
-  const yearFolderId = yearResult.folderId
-
-  // Get or create Mostanadat subfolder
-  const mostanadatResult = await getOrCreateFolder(yearFolderId, 'Mostanadat')
-  const mostanadatFolderId = mostanadatResult.folderId
-
-  return {
-    processedFolderId: processedFolderId,  // Root Processed folder (for Excel file)
-    companyFolderId: companyFolderId,
-    yearFolderId: yearFolderId,
-    mostanadatFolderId: mostanadatFolderId,
-    created: processedResult.created
-  }
+  const processed = await getOrCreateFolder(parentFolderId, 'Processed')
+  const company = await getOrCreateFolder(processed.folderId, excelSettings.value.companyId)
+  const year = await getOrCreateFolder(company.folderId, excelSettings.value.year)
+  const mostanadat = await getOrCreateFolder(year.folderId, 'Mostanadat')
+  return { processedFolderId: processed.folderId, mostanadatFolderId: mostanadat.folderId, created: processed.created }
 }
 
-// Get or create the master "Invoice Data" Google Sheet in the Sheets folder
 async function getOrCreateMasterSheet(sheetsFolderId) {
   const sheetName = 'Invoice Data'
-
-  // Search for existing Google Sheet with this name in the Sheets folder
   const query = `'${sheetsFolderId}' in parents and name='${sheetName}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`
 
   const searchResponse = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
-    {
-      headers: { Authorization: `Bearer ${accessToken.value}` }
-    }
+    { headers: { Authorization: `Bearer ${accessToken.value}` } }
   )
 
   if (searchResponse.ok) {
-    const searchData = await searchResponse.json()
-    if (searchData.files && searchData.files.length > 0) {
-      // Found existing master sheet
-      return { spreadsheetId: searchData.files[0].id, created: false }
-    }
+    const data = await searchResponse.json()
+    if (data.files?.[0]) return { spreadsheetId: data.files[0].id, created: false }
   }
 
-  // Create new Google Sheet
-  const createResponse = await fetch(
-    'https://sheets.googleapis.com/v4/spreadsheets',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken.value}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        properties: {
-          title: sheetName
-        },
-        sheets: [{
-          properties: {
-            title: 'Invoice Data',
-            rightToLeft: true
-          }
-        }]
-      })
-    }
-  )
+  const createResponse = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken.value}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      properties: { title: sheetName },
+      sheets: [{ properties: { title: 'Invoice Data', rightToLeft: true } }]
+    })
+  })
 
   if (!createResponse.ok) {
     const errorData = await createResponse.json().catch(() => ({}))
-    const errorMsg = errorData.error?.message || JSON.stringify(errorData) || 'Unknown error'
-    const statusCode = createResponse.status
-    throw new Error(`Failed to create master sheet (HTTP ${statusCode}): ${errorMsg}`)
+    throw new Error(`Failed to create master sheet: ${errorData.error?.message || 'Unknown error'}`)
   }
 
   const sheetData = await createResponse.json()
   const spreadsheetId = sheetData.spreadsheetId
 
-  // Move the sheet to the Sheets folder
-  // First, get the current parent
-  const fileResponse = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=parents`,
-    {
-      headers: { Authorization: `Bearer ${accessToken.value}` }
-    }
-  )
-
+  // Move to Sheets folder
+  const fileResponse = await fetch(`https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=parents`, {
+    headers: { Authorization: `Bearer ${accessToken.value}` }
+  })
   if (fileResponse.ok) {
     const fileData = await fileResponse.json()
-    const previousParents = fileData.parents ? fileData.parents.join(',') : ''
-
-    // Move to Sheets folder
     await fetch(
-      `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?addParents=${sheetsFolderId}&removeParents=${previousParents}`,
-      {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${accessToken.value}` }
-      }
+      `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?addParents=${sheetsFolderId}&removeParents=${fileData.parents?.join(',') || ''}`,
+      { method: 'PATCH', headers: { Authorization: `Bearer ${accessToken.value}` } }
     )
   }
 
-  // Add header row to the new sheet
-  const headers = [
-    ['شماره', 'تاریخ', 'نام شخص حقیقی / حقوقی', 'ردیف', 'شرح کالا یا خدمات', 'مبلغ کل پس از تخفیف', 'جمع مالیات و عوارض']
-  ]
-
-  await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A1:G1?valueInputOption=RAW`,
-    {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${accessToken.value}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ values: headers })
-    }
-  )
+  // Add headers
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A1:G1?valueInputOption=RAW`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${accessToken.value}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values: [['شماره', 'تاریخ', 'نام شخص حقیقی / حقوقی', 'ردیف', 'شرح کالا یا خدمات', 'مبلغ کل پس از تخفیف', 'جمع مالیات و عوارض']] })
+  })
 
   return { spreadsheetId, created: true }
 }
 
-// Append invoice data rows to the master Google Sheet
 async function appendToMasterSheet(spreadsheetId, invoiceData) {
-  if (!invoiceData || !invoiceData.items || invoiceData.items.length === 0) {
-    return { updatedRows: 0 }
-  }
+  if (!invoiceData?.items?.length) return { updatedRows: 0 }
 
-  // Prepare rows to append
-  // Columns: شماره | تاریخ | نام شخص حقیقی / حقوقی | ردیف | شرح کالا یا خدمات | مبلغ کل پس از تخفیف | جمع مالیات و عوارض
   const rows = invoiceData.items.map(item => [
     invoiceData.invoiceNumber || '',
     invoiceData.date || '',
@@ -1188,59 +982,41 @@ async function appendToMasterSheet(spreadsheetId, invoiceData) {
     item.taxAndDuties || ''
   ])
 
-  // Append to the sheet
   const response = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A:G:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
     {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken.value}`,
-        'Content-Type': 'application/json'
-      },
+      headers: { Authorization: `Bearer ${accessToken.value}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ values: rows })
     }
   )
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(`Failed to append to master sheet: ${errorData.error?.message || 'Unknown error'}`)
+    throw new Error(`Failed to append: ${errorData.error?.message || 'Unknown error'}`)
   }
 
-  const result = await response.json()
-  return { updatedRows: rows.length, updates: result.updates }
+  return { updatedRows: rows.length }
 }
 
-// Find Excel template file in the root folder
 async function findExcelTemplateFile(folderId, filename) {
   const xlsxFilename = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`
   const query = `'${folderId}' in parents and name='${xlsxFilename}' and trashed=false`
 
   const response = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
-    {
-      headers: { Authorization: `Bearer ${accessToken.value}` }
-    }
+    { headers: { Authorization: `Bearer ${accessToken.value}` } }
   )
 
-  if (!response.ok) {
-    return null
-  }
-
+  if (!response.ok) return null
   const data = await response.json()
-  if (data.files && data.files.length > 0) {
-    return data.files[0]
-  }
-  return null
+  return data.files?.[0] || null
 }
 
-// Read all data from master Google Sheet
 async function readMasterSheetData(spreadsheetId) {
-  const response = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A:G`,
-    {
-      headers: { Authorization: `Bearer ${accessToken.value}` }
-    }
-  )
+  const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A:G`, {
+    headers: { Authorization: `Bearer ${accessToken.value}` }
+  })
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
@@ -1251,497 +1027,272 @@ async function readMasterSheetData(spreadsheetId) {
   return data.values || []
 }
 
-// Helper function to set cell value while preserving existing cell properties
-function setCellValue(worksheet, cellAddress, value) {
-  const existingCell = worksheet[cellAddress]
-  if (existingCell) {
-    // Preserve existing cell properties (formatting, style, etc.) and only update the value
-    existingCell.v = value
-    // Update type based on value
-    if (typeof value === 'number') {
-      existingCell.t = 'n'
-    } else {
-      existingCell.t = 's'
-    }
-    // Clear any cached formatted value
-    delete existingCell.w
-  } else {
-    // Create new cell with just value and type (no other modifications)
-    worksheet[cellAddress] = { t: 's', v: value }
-  }
-}
-
-// Populate Excel template with mapped data from master sheet
-// IMPORTANT: This function only fills in the mapped data cells without modifying anything else
-function populateExcelTemplate(xlsxArrayBuffer, masterSheetData, targetSheetName) {
-  // Read the Excel file with all options to preserve formatting
-  const workbook = XLSX.read(xlsxArrayBuffer, {
-    type: 'array',
-    cellStyles: true,    // Preserve cell styles
-    cellFormula: true,   // Preserve formulas
-    cellDates: true,     // Preserve date formatting
-    cellNF: true,        // Preserve number formats
-    sheetStubs: true     // Include empty cells to preserve structure
+// Copy file using Google Drive API
+async function copyFileInDrive(fileId, newName, destinationFolderId) {
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/copy?supportsAllDrives=true`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken.value}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: newName, parents: [destinationFolderId] })
   })
 
-  // Find the target sheet
-  if (!workbook.SheetNames.includes(targetSheetName)) {
-    throw new Error(`Sheet "${targetSheetName}" not found in Excel file. Available sheets: ${workbook.SheetNames.join(', ')}`)
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(`Failed to copy file: ${errorData.error?.message || 'Unknown error'}`)
   }
 
-  const worksheet = workbook.Sheets[targetSheetName]
+  return await response.json()
+}
 
-  // Skip header row (row 1 in masterSheetData is headers)
-  // Master sheet columns: A=شماره, B=تاریخ, C=نام شخص, D=ردیف, E=شرح کالا, F=مبلغ کل پس از تخفیف, G=جمع مالیات
-  // Excel columns (data starts at row 8):
-  // B=فایل (skip), C=شناسه, D=شرکت, E=سال, F=ردیف, G=عنوان, H=شماره, I=تاریخ, J=مبلغ بدون مالیات, K=مبلغ مالیات, L=کارفرما/خریدار
+// Update cells in Google Sheets (triggers formula recalculation)
+async function updateSheetCells(spreadsheetId, sheetName, cellUpdates) {
+  const data = cellUpdates.map(update => ({
+    range: `'${sheetName}'!${update.cell}`,
+    values: [[update.value]]
+  }))
 
-  const dataRows = masterSheetData.slice(1) // Skip header row
-  const startRow = 8 // Excel data starts at row 8
+  const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken.value}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(`Failed to update cells: ${errorData.error?.message || 'Unknown error'}`)
+  }
+
+  return await response.json()
+}
+
+// Process Excel template using Google Drive copy + Sheets API
+async function processExcelTemplate(sourceFolderId, masterSheetId) {
+  const filename = excelSettings.value.filename
+  const sheetName = excelSettings.value.sheetName
+
+  addLog('info', `Looking for Excel template: ${filename}.xlsx`)
+  const templateFile = await findExcelTemplateFile(sourceFolderId, filename)
+
+  if (!templateFile) {
+    addLog('warning', `Excel template not found`, 'Skipping Excel mapping')
+    return null
+  }
+
+  addLog('success', `Found Excel template: ${templateFile.name}`)
+
+  const masterSheetData = await readMasterSheetData(masterSheetId)
+  const dataRowCount = masterSheetData.length - 1
+
+  if (dataRowCount === 0) {
+    addLog('warning', 'No data in master sheet')
+    return null
+  }
+
+  addLog('info', `Read ${dataRowCount} data row(s) from master sheet`)
+
+  const processedStructure = await getOrCreateProcessedStructure(sourceFolderId)
+  addLog('success', `Created Processed folder structure`)
+
+  // Copy the Excel file using Google Drive API
+  const outputFilename = `${filename}.xlsx`
+  addLog('info', `Copying Excel template to Processed folder`)
+  const copiedFile = await copyFileInDrive(templateFile.id, outputFilename, processedStructure.processedFolderId)
+  addLog('success', `Copied Excel template: ${outputFilename}`)
+
+  // Build cell updates
+  const cellUpdates = []
+  const dataRows = masterSheetData.slice(1)
+  const startRow = 8
 
   dataRows.forEach((row, index) => {
     const excelRow = startRow + index
     const [invoiceNumber, date, buyerName, rowNum, description, totalAfterDiscount, taxAndDuties] = row
 
-    // Only set cell values - preserve all existing formatting and structure
-    // Column C (شناسه) - Company ID from settings
-    setCellValue(worksheet, `C${excelRow}`, excelSettings.value.companyId)
-    // Column D (شرکت) - Company Name from settings
-    setCellValue(worksheet, `D${excelRow}`, excelSettings.value.companyName)
-    // Column E (سال) - Year from settings
-    setCellValue(worksheet, `E${excelRow}`, excelSettings.value.year)
-    // Column F (ردیف) - Row number from master sheet
-    setCellValue(worksheet, `F${excelRow}`, rowNum || '')
-    // Column G (عنوان) - Description from master sheet
-    setCellValue(worksheet, `G${excelRow}`, description || '')
-    // Column H (شماره) - Invoice number from master sheet
-    setCellValue(worksheet, `H${excelRow}`, invoiceNumber || '')
-    // Column I (تاریخ) - Date from master sheet
-    setCellValue(worksheet, `I${excelRow}`, date || '')
-    // Column J (مبلغ بدون مالیات) - Total after discount from master sheet
-    setCellValue(worksheet, `J${excelRow}`, totalAfterDiscount || '')
-    // Column K (مبلغ مالیات) - Tax from master sheet
-    setCellValue(worksheet, `K${excelRow}`, taxAndDuties || '')
-    // Column L (کارفرما/خریدار) - Buyer name from master sheet
-    setCellValue(worksheet, `L${excelRow}`, buyerName || '')
+    cellUpdates.push(
+      { cell: `C${excelRow}`, value: excelSettings.value.companyId },
+      { cell: `D${excelRow}`, value: excelSettings.value.companyName },
+      { cell: `E${excelRow}`, value: excelSettings.value.year },
+      { cell: `F${excelRow}`, value: rowNum || '' },
+      { cell: `G${excelRow}`, value: description || '' },
+      { cell: `H${excelRow}`, value: invoiceNumber || '' },
+      { cell: `I${excelRow}`, value: date || '' },
+      { cell: `J${excelRow}`, value: totalAfterDiscount || '' },
+      { cell: `K${excelRow}`, value: taxAndDuties || '' },
+      { cell: `L${excelRow}`, value: buyerName || '' }
+    )
   })
 
-  // DO NOT modify worksheet['!ref'] - preserve the original structure exactly
+  addLog('info', `Updating ${cellUpdates.length} cells (formulas will recalculate)`)
+  await updateSheetCells(copiedFile.id, sheetName, cellUpdates)
+  addLog('success', 'Excel template populated with formula recalculation')
 
-  // Write back to buffer, preserving all properties
-  const xlsxBuffer = XLSX.write(workbook, {
-    bookType: 'xlsx',
-    type: 'array',
-    cellStyles: true  // Preserve styles in output
-  })
-  return new Blob([xlsxBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-}
-
-// Process Excel template: find, download, populate, and upload to Processed folder
-async function processExcelTemplate(sourceFolderId, masterSheetId) {
-  const filename = excelSettings.value.filename
-  const sheetName = excelSettings.value.sheetName
-
-  // Find the Excel template file in the source folder
-  addLog('info', `Looking for Excel template: ${filename}.xlsx`)
-  const templateFile = await findExcelTemplateFile(sourceFolderId, filename)
-
-  if (!templateFile) {
-    addLog('warning', `Excel template "${filename}.xlsx" not found in source folder`, 'Skipping Excel mapping')
-    return null
-  }
-
-  addLog('success', `Found Excel template: ${templateFile.name}`, `File ID: ${templateFile.id}`)
-
-  // Download the Excel template
-  addLog('info', 'Downloading Excel template...')
-  const xlsxArrayBuffer = await downloadFile(templateFile.id)
-  addLog('success', 'Downloaded Excel template', `Size: ${formatBytes(xlsxArrayBuffer.byteLength)}`)
-
-  // Read master sheet data
-  addLog('info', 'Reading data from master Invoice Data sheet...')
-  const masterSheetData = await readMasterSheetData(masterSheetId)
-  const dataRowCount = masterSheetData.length - 1 // Exclude header
-  addLog('success', `Read ${dataRowCount} data row(s) from master sheet`)
-
-  if (dataRowCount === 0) {
-    addLog('warning', 'No data in master sheet to map to Excel template')
-    return null
-  }
-
-  // Populate the Excel template
-  addLog('info', `Populating Excel template sheet "${sheetName}" with ${dataRowCount} rows...`)
-  const populatedExcelBlob = populateExcelTemplate(xlsxArrayBuffer, masterSheetData, sheetName)
-  addLog('success', 'Excel template populated successfully')
-
-  // Create the Processed folder structure: Processed/{companyId}/{year}/Mostanadat
-  addLog('info', 'Creating Processed folder structure...')
-  const processedStructure = await getOrCreateProcessedStructure(sourceFolderId)
-  addLog('success', `Created Processed folder structure: Processed/${excelSettings.value.companyId}/${excelSettings.value.year}/Mostanadat`)
-
-  // Upload the populated Excel directly to Processed folder (not in subfolders)
-  const outputFilename = `${filename}.xlsx`
-  addLog('info', `Uploading populated Excel to Processed folder: ${outputFilename}`)
-  const uploadResult = await uploadToDrive(populatedExcelBlob, outputFilename, processedStructure.processedFolderId, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-  addLog('success', `Uploaded populated Excel: ${outputFilename}`, `File ID: ${uploadResult.id}`)
-
-  return uploadResult
+  return copiedFile
 }
 
 async function downloadFile(fileId) {
-  const response = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-    {
-      headers: { Authorization: `Bearer ${accessToken.value}` }
-    }
-  )
-
-  if (!response.ok) {
-    throw new Error('Failed to download file')
-  }
-
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    headers: { Authorization: `Bearer ${accessToken.value}` }
+  })
+  if (!response.ok) throw new Error('Failed to download file')
   return await response.arrayBuffer()
 }
 
-async function processPdf(pdfBytes, filename, onOcrProgress = null) {
+async function processPdf(pdfBytes, filename, onProgress = null) {
   let extractedText = ''
 
   try {
-    // Load the PDF with pdf-lib for manipulation
-    const pdfDoc = await PDFDocument.load(pdfBytes, {
-      ignoreEncryption: true,
-      updateMetadata: false
-    })
-
+    const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true, updateMetadata: false })
     const pages = pdfDoc.getPages()
 
-    // Text extraction: Try direct extraction first, fall back to OCR if needed
     if (options.value.ocr) {
       try {
-        addLog('info', `Extracting text from ${filename}...`, `${pages.length} page(s)`)
-
-        // Load PDF with pdf.js
         const loadingTask = pdfjsLib.getDocument({ data: pdfBytes })
         const pdfJsDoc = await loadingTask.promise
-
         const textParts = []
         let totalDirectTextLength = 0
 
-        // STEP 1: Try direct text extraction first (for text-based PDFs)
-        addLog('info', 'Attempting direct text extraction...', filename)
-
+        // Try direct text extraction first
         for (let i = 1; i <= pdfJsDoc.numPages; i++) {
-          if (onOcrProgress) {
-            onOcrProgress(`Extracting text from page ${i}/${pdfJsDoc.numPages}`)
-          }
-
+          onProgress?.(`Extracting text from page ${i}/${pdfJsDoc.numPages}`)
           const page = await pdfJsDoc.getPage(i)
           const textContent = await page.getTextContent()
-
-          // Extract text from the text content items
-          const pageText = textContent.items
-            .map(item => item.str)
-            .join(' ')
-            .trim()
-
+          const pageText = textContent.items.map(item => item.str).join(' ').trim()
           if (pageText) {
             textParts.push(`--- Page ${i} ---\n${pageText}`)
             totalDirectTextLength += pageText.length
           }
         }
 
-        // Check if we got meaningful text (at least 50 chars per page on average)
-        const avgCharsPerPage = totalDirectTextLength / pdfJsDoc.numPages
-        const hasDirectText = avgCharsPerPage > 50
-
-        if (hasDirectText) {
-          // Direct extraction worked! No OCR needed
+        if (totalDirectTextLength / pdfJsDoc.numPages > 50) {
           extractedText = normalizeArabicText(textParts.join('\n\n'))
-          addLog('success', `Direct text extraction complete for ${filename}`, `Extracted ${extractedText.length} characters (no OCR needed)`)
+          addLog('success', `Direct text extraction complete`, `${extractedText.length} chars`)
         } else {
-          // STEP 2: Fall back to OCR for scanned/image-based PDFs
-          addLog('info', `Little/no text found directly. Running OCR on ${filename}...`, `Found only ${totalDirectTextLength} chars`)
-
-          textParts.length = 0 // Clear the array for OCR results
-
+          // Fall back to OCR
+          textParts.length = 0
           for (let i = 1; i <= pdfJsDoc.numPages; i++) {
-            if (onOcrProgress) {
-              onOcrProgress(`OCR page ${i}/${pdfJsDoc.numPages}`)
-            }
-            addLog('info', `OCR processing page ${i}/${pdfJsDoc.numPages}`, filename)
-
+            onProgress?.(`OCR page ${i}/${pdfJsDoc.numPages}`)
             const page = await pdfJsDoc.getPage(i)
-            const viewport = page.getViewport({ scale: 2.0 }) // Higher scale = better OCR quality
-
-            // Create canvas to render PDF page
+            const viewport = page.getViewport({ scale: 2.0 })
             const canvas = document.createElement('canvas')
             const context = canvas.getContext('2d')
             canvas.height = viewport.height
             canvas.width = viewport.width
-
-            await page.render({
-              canvasContext: context,
-              viewport: viewport
-            }).promise
-
-            // Convert canvas to image data URL
-            const imageDataUrl = canvas.toDataURL('image/png')
-
-            // Run Tesseract OCR on the image
-            // Support multiple languages: English + Persian (Farsi) + Arabic
-            const result = await Tesseract.recognize(
-              imageDataUrl,
-              'eng+fas+ara', // English + Persian (Farsi) + Arabic
-              {
-                logger: m => {
-                  if (m.status === 'recognizing text' && m.progress) {
-                    // Could add progress updates here
-                  }
-                }
-              }
-            )
-
-            if (result.data.text.trim()) {
-              textParts.push(`--- Page ${i} ---\n${result.data.text.trim()}`)
-            }
+            await page.render({ canvasContext: context, viewport }).promise
+            const result = await Tesseract.recognize(canvas.toDataURL('image/png'), 'eng+fas+ara')
+            if (result.data.text.trim()) textParts.push(`--- Page ${i} ---\n${result.data.text.trim()}`)
           }
-
           extractedText = normalizeArabicText(textParts.join('\n\n'))
-
-          if (extractedText) {
-            addLog('success', `OCR complete for ${filename}`, `Extracted ${extractedText.length} characters`)
-          } else {
-            addLog('warning', `OCR complete but no text found in ${filename}`)
-          }
+          if (extractedText) addLog('success', `OCR complete`, `${extractedText.length} chars`)
         }
-
-      } catch (extractErr) {
-        console.error('Text extraction error:', extractErr)
-        addLog('warning', `Text extraction failed for ${filename}`, extractErr.message)
-        // Continue without extracted text
+      } catch (err) {
+        addLog('warning', `Text extraction failed`, err.message)
       }
     }
 
     // Standardize page sizes if enabled
     if (options.value.standardize && options.value.pageSize !== 'ORIGINAL') {
       const targetSize = getPageDimensions(options.value.pageSize)
-
       for (const page of pages) {
         const { width, height } = page.getSize()
-
-        // Only resize if significantly different
         if (Math.abs(width - targetSize.width) > 1 || Math.abs(height - targetSize.height) > 1) {
-          // Scale content to fit new size
-          const scaleX = targetSize.width / width
-          const scaleY = targetSize.height / height
-          const scale = Math.min(scaleX, scaleY)
-
+          const scale = Math.min(targetSize.width / width, targetSize.height / height)
           page.setSize(targetSize.width, targetSize.height)
           page.scaleContent(scale, scale)
-
-          // Center content
-          const offsetX = (targetSize.width - width * scale) / 2
-          const offsetY = (targetSize.height - height * scale) / 2
-          page.translateContent(offsetX, offsetY)
+          page.translateContent((targetSize.width - width * scale) / 2, (targetSize.height - height * scale) / 2)
         }
       }
     }
 
-    // Update metadata
     pdfDoc.setTitle(filename.replace('.pdf', ''))
     pdfDoc.setProducer('PDF Normalizer')
     pdfDoc.setModificationDate(new Date())
 
-    // Save with compression if enabled
-    const saveOptions = {}
-    if (options.value.compress) {
-      saveOptions.useObjectStreams = true
-    }
-
-    const processedPdfBytes = await pdfDoc.save(saveOptions)
-
-    return {
-      pdfBytes: processedPdfBytes,
-      extractedText: extractedText
-    }
+    const processedPdfBytes = await pdfDoc.save(options.value.compress ? { useObjectStreams: true } : {})
+    return { pdfBytes: processedPdfBytes, extractedText }
 
   } catch (err) {
-    console.error('PDF processing error:', err)
-    // If processing fails, return original
-    return {
-      pdfBytes: pdfBytes,
-      extractedText: extractedText
-    }
+    return { pdfBytes, extractedText }
   }
 }
 
 function getPageDimensions(size) {
-  switch (size) {
-    case 'LETTER':
-      return { width: 612, height: 792 } // 8.5 x 11 inches
-    case 'A4':
-      return { width: 595.28, height: 841.89 } // 210 x 297 mm
-    case 'LEGAL':
-      return { width: 612, height: 1008 } // 8.5 x 14 inches
-    default:
-      return { width: 612, height: 792 }
+  const dimensions = {
+    LETTER: { width: 612, height: 792 },
+    A4: { width: 595.28, height: 841.89 },
+    LEGAL: { width: 612, height: 1008 }
   }
+  return dimensions[size] || dimensions.LETTER
 }
 
-// Normalize Arabic/Persian text by converting presentation forms to base characters
 function normalizeArabicText(text) {
   if (!text) return text
-
-  // Apply NFKC normalization to convert Arabic Presentation Forms to base characters
-  let normalized = text.normalize('NFKC')
-
-  // Additional cleanup for common issues
-  // Remove zero-width characters that can cause display issues
-  normalized = normalized.replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, '')
-
-  // Normalize multiple spaces to single space
-  normalized = normalized.replace(/  +/g, ' ')
-
-  return normalized
+  return text.normalize('NFKC').replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, '').replace(/  +/g, ' ')
 }
 
-// Parse filename to extract invoice number and buyer name
-// Format: "3427 - آموزشگاه زبان کوشش" or "3427 - آموزشگاه زبان کوشش.pdf"
 function parseFilename(filename) {
   if (!filename) return { invoiceNumber: '', buyerName: '' }
-
-  // Remove .pdf extension if present
   const nameWithoutExt = filename.replace(/\.pdf$/i, '')
-
-  // Split by " - " separator
   const parts = nameWithoutExt.split(' - ')
-
   if (parts.length >= 2) {
-    const invoiceNumber = parts[0].trim()
-    const buyerName = parts.slice(1).join(' - ').trim() // Handle case where buyer name contains " - "
-    return { invoiceNumber, buyerName }
+    return { invoiceNumber: parts[0].trim(), buyerName: parts.slice(1).join(' - ').trim() }
   }
-
   return { invoiceNumber: '', buyerName: '' }
 }
 
-// Parse Persian invoice text and extract structured data
-// Specialized for Rastakhiz invoice format
 function parseInvoiceText(text, filename = '') {
   if (!text) return null
-
-  // Normalize text first
   const normalizedText = normalizeArabicText(text)
+  const result = { invoiceNumber: '', date: '', buyerName: '', items: [], rawText: text }
 
-  const result = {
-    // Header fields (non-table)
-    invoiceNumber: '',  // شماره
-    date: '',           // تاریخ
-    buyerName: '',      // نام شخص حقیقی / حقوقی (from buyer section)
-
-    // Table items (can have multiple rows)
-    items: [],
-
-    // Raw text for reference
-    rawText: text
-  }
-
-  // PRIMARY: Extract invoice number and buyer name from filename
-  // Format: "3427 - آموزشگاه زبان کوشش.pdf"
+  // Extract from filename first
   const filenameData = parseFilename(filename)
-  if (filenameData.invoiceNumber) {
-    result.invoiceNumber = filenameData.invoiceNumber
-  }
-  if (filenameData.buyerName) {
-    result.buyerName = filenameData.buyerName
-  }
+  if (filenameData.invoiceNumber) result.invoiceNumber = filenameData.invoiceNumber
+  if (filenameData.buyerName) result.buyerName = filenameData.buyerName
 
-  // FALLBACK: Extract invoice number from text if not found in filename
-  // Pattern: "شماره: 3427" or "شماره:3427"
+  // Fallback to text extraction
   if (!result.invoiceNumber) {
-    const invoiceNumMatch = normalizedText.match(/شماره[:\s]*(\d+)/)
-    if (invoiceNumMatch) {
-      result.invoiceNumber = invoiceNumMatch[1]
-    }
+    const match = normalizedText.match(/شماره[:\s]*(\d+)/)
+    if (match) result.invoiceNumber = match[1]
   }
 
-  // Extract تاریخ (Date) from text
-  // Pattern: "1403/04/02 :تاریخ" (RTL format) or "تاریخ: 1403/04/02"
   const dateMatch = normalizedText.match(/(\d{4}\/\d{2}\/\d{2})\s*:?\s*تاریخ|تاریخ\s*:?\s*(\d{4}\/\d{2}\/\d{2})/)
-  if (dateMatch) {
-    result.date = dateMatch[1] || dateMatch[2]
-  }
+  if (dateMatch) result.date = dateMatch[1] || dateMatch[2]
 
-  // FALLBACK: Extract buyer name from text if not found in filename
-  // Find the SECOND instance of "نام شخص حقیقی / حقوقی" (first is seller, second is buyer)
   if (!result.buyerName) {
     const label = 'نام شخص حقیقی / حقوقی'
     const firstIndex = normalizedText.indexOf(label)
-
     if (firstIndex !== -1) {
-      // Find second instance starting after the first one
       const secondIndex = normalizedText.indexOf(label, firstIndex + label.length)
-
       if (secondIndex !== -1) {
-        // Get text after the second instance of the label
-        const afterLabel = normalizedText.substring(secondIndex + label.length)
-        // Extract value until newline or colon (next field)
-        const match = afterLabel.match(/^[:\s]*([^\n:]+)/)
-        if (match && match[1]) {
-          const value = match[1].trim()
-          // Make sure it's not another field label
-          if (value.length > 2 && !value.includes('شناسه') && !value.includes('کد')) {
-            result.buyerName = value
-          }
-        }
+        const match = normalizedText.substring(secondIndex + label.length).match(/^[:\s]*([^\n:]+)/)
+        if (match?.[1]?.length > 2 && !match[1].includes('شناسه')) result.buyerName = match[1].trim()
       }
     }
   }
 
-  // 4. Parse table rows
-  // The table has these columns (RTL order in headers, but data appears LTR in extracted text):
-  // Headers: ردیف | شرح کالا یا خدمات | تعداد | مبلغ واحد | مبلغ کل | مبلغ تخفیف | مبلغ کل پس از تخفیف | جمع مالیات و عوارض | جمع مبلغ کل بعد از مالیات
-  //
-  // In extracted text, after "ردیف" header, data appears as:
-  // grandTotal tax totalAfterDiscount discount total unitPrice quantity description rowNumber
-  // Example: 11,550,000 1,050,000 10,500,000 0 10,500,000 150,000 70 نرم افزار کلاس آنلاین 1
-
-  // Find the position after "ردیف" header to start looking for data
-  const headerEndMatch = normalizedText.match(/تعداد\s+شرح کالا یا خدمات\s+ردیف/)
-  if (headerEndMatch) {
-    const dataStartIndex = normalizedText.indexOf(headerEndMatch[0]) + headerEndMatch[0].length
-
-    // Get the text after headers until "جمع کل" (totals row)
-    let dataSection = normalizedText.substring(dataStartIndex)
+  // Parse table rows
+  const headerMatch = normalizedText.match(/تعداد\s+شرح کالا یا خدمات\s+ردیف/)
+  if (headerMatch) {
+    let dataSection = normalizedText.substring(normalizedText.indexOf(headerMatch[0]) + headerMatch[0].length)
     const totalsIndex = dataSection.indexOf('جمع کل')
-    if (totalsIndex !== -1) {
-      dataSection = dataSection.substring(0, totalsIndex)
-    }
+    if (totalsIndex !== -1) dataSection = dataSection.substring(0, totalsIndex)
 
-    // Pattern to match each row:
-    // Numbers (8 of them) followed by Persian text (description) followed by row number
-    // grandTotal tax totalAfterDiscount discount total unitPrice quantity description rowNum
     const rowPattern = /([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+(\d+)\s+([^\d]+?)\s+(\d+)(?=\s|$)/g
-
     let match
     while ((match = rowPattern.exec(dataSection)) !== null) {
       const description = match[8].trim()
-      // Skip if this looks like a header or total row
-      if (description.includes('شرح') || description.includes('ردیف') || description.includes('جمع')) {
-        continue
+      if (!description.includes('شرح') && !description.includes('ردیف') && !description.includes('جمع')) {
+        result.items.push({
+          rowNumber: match[9],
+          description,
+          quantity: match[7],
+          unitPrice: match[6],
+          total: match[5],
+          discount: match[4],
+          totalAfterDiscount: match[3],
+          taxAndDuties: match[2],
+          grandTotal: match[1]
+        })
       }
-
-      result.items.push({
-        rowNumber: match[9],                    // ردیف
-        description: description,               // شرح کالا یا خدمات
-        quantity: match[7],                     // تعداد
-        unitPrice: match[6],                    // مبلغ واحد
-        total: match[5],                        // مبلغ کل
-        discount: match[4],                     // مبلغ تخفیف
-        totalAfterDiscount: match[3],           // مبلغ کل پس از تخفیف
-        taxAndDuties: match[2],                 // جمع مالیات و عوارض
-        grandTotal: match[1]                    // جمع مبلغ کل بعد از مالیات و عوارض
-      })
     }
   }
 
@@ -1749,228 +1300,95 @@ function parseInvoiceText(text, filename = '') {
 }
 
 function createExcelFromText(extractedText, originalFilename) {
-  // Create workbook
   const wb = XLSX.utils.book_new()
-
-  // Try to parse as invoice first
   const invoiceData = parseInvoiceText(extractedText, originalFilename)
 
-  // Sheet 1: Invoice Data (main sheet with all essential fields)
-  // Columns: شماره | تاریخ | نام شخص حقیقی / حقوقی | ردیف | شرح کالا یا خدمات | مبلغ کل پس از تخفیف | جمع مالیات و عوارض
-  const invoiceSheetData = [
-    // Header row with exact column names
-    [
-      'شماره',
-      'تاریخ',
-      'نام شخص حقیقی / حقوقی',
-      'ردیف',
-      'شرح کالا یا خدمات',
-      'مبلغ کل پس از تخفیف',
-      'جمع مالیات و عوارض'
-    ]
-  ]
-
-  // Add data rows - one row per item in the invoice
-  if (invoiceData?.items && invoiceData.items.length > 0) {
-    invoiceData.items.forEach((item) => {
-      invoiceSheetData.push([
-        invoiceData.invoiceNumber || '',        // شماره
-        invoiceData.date || '',                 // تاریخ
-        invoiceData.buyerName || '',            // نام شخص حقیقی / حقوقی
-        item.rowNumber || '',                   // ردیف
-        item.description || '',                 // شرح کالا یا خدمات
-        item.totalAfterDiscount || '',          // مبلغ کل پس از تخفیف
-        item.taxAndDuties || ''                 // جمع مالیات و عوارض
-      ])
+  // Invoice Data sheet
+  const invoiceSheetData = [['شماره', 'تاریخ', 'نام شخص حقیقی / حقوقی', 'ردیف', 'شرح کالا یا خدمات', 'مبلغ کل پس از تخفیف', 'جمع مالیات و عوارض']]
+  if (invoiceData?.items?.length > 0) {
+    invoiceData.items.forEach(item => {
+      invoiceSheetData.push([invoiceData.invoiceNumber, invoiceData.date, invoiceData.buyerName, item.rowNumber, item.description, item.totalAfterDiscount, item.taxAndDuties])
     })
   } else {
-    // If no items parsed, add a row with just header info
-    invoiceSheetData.push([
-      invoiceData?.invoiceNumber || '',
-      invoiceData?.date || '',
-      invoiceData?.buyerName || '',
-      '',
-      '',
-      '',
-      ''
-    ])
+    invoiceSheetData.push([invoiceData?.invoiceNumber || '', invoiceData?.date || '', invoiceData?.buyerName || '', '', '', '', ''])
   }
 
   const wsInvoice = XLSX.utils.aoa_to_sheet(invoiceSheetData)
-  wsInvoice['!cols'] = [
-    { wch: 12 },  // شماره
-    { wch: 12 },  // تاریخ
-    { wch: 40 },  // نام شخص حقیقی / حقوقی
-    { wch: 8 },   // ردیف
-    { wch: 35 },  // شرح کالا یا خدمات
-    { wch: 20 },  // مبلغ کل پس از تخفیف
-    { wch: 20 },  // جمع مالیات و عوارض
-  ]
+  wsInvoice['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 40 }, { wch: 8 }, { wch: 35 }, { wch: 20 }, { wch: 20 }]
   wsInvoice['!dir'] = 'rtl'
   XLSX.utils.book_append_sheet(wb, wsInvoice, 'Invoice Data')
 
-  // Sheet 2: All Item Details (full table data for reference)
-  if (invoiceData?.items && invoiceData.items.length > 0) {
-    const fullItemsData = [
-      [
-        'ردیف',
-        'شرح کالا یا خدمات',
-        'تعداد',
-        'مبلغ واحد',
-        'مبلغ کل',
-        'مبلغ تخفیف',
-        'مبلغ کل پس از تخفیف',
-        'جمع مالیات و عوارض',
-        'جمع مبلغ کل بعد از مالیات'
-      ]
-    ]
-
-    invoiceData.items.forEach((item) => {
-      fullItemsData.push([
-        item.rowNumber || '',
-        item.description || '',
-        item.quantity || '',
-        item.unitPrice || '',
-        item.total || '',
-        item.discount || '',
-        item.totalAfterDiscount || '',
-        item.taxAndDuties || '',
-        item.grandTotal || ''
-      ])
+  // Full Item Details sheet
+  if (invoiceData?.items?.length > 0) {
+    const fullData = [['ردیف', 'شرح کالا یا خدمات', 'تعداد', 'مبلغ واحد', 'مبلغ کل', 'مبلغ تخفیف', 'مبلغ کل پس از تخفیف', 'جمع مالیات و عوارض', 'جمع مبلغ کل بعد از مالیات']]
+    invoiceData.items.forEach(item => {
+      fullData.push([item.rowNumber, item.description, item.quantity, item.unitPrice, item.total, item.discount, item.totalAfterDiscount, item.taxAndDuties, item.grandTotal])
     })
-
-    const wsFullItems = XLSX.utils.aoa_to_sheet(fullItemsData)
-    wsFullItems['!cols'] = [
-      { wch: 8 },   // ردیف
-      { wch: 35 },  // شرح کالا
-      { wch: 10 },  // تعداد
-      { wch: 15 },  // مبلغ واحد
-      { wch: 15 },  // مبلغ کل
-      { wch: 15 },  // مبلغ تخفیف
-      { wch: 20 },  // مبلغ کل پس از تخفیف
-      { wch: 20 },  // جمع مالیات
-      { wch: 22 },  // جمع مبلغ کل بعد از مالیات
-    ]
-    wsFullItems['!dir'] = 'rtl'
-    XLSX.utils.book_append_sheet(wb, wsFullItems, 'Full Item Details')
+    const wsFull = XLSX.utils.aoa_to_sheet(fullData)
+    wsFull['!dir'] = 'rtl'
+    XLSX.utils.book_append_sheet(wb, wsFull, 'Full Item Details')
   }
 
-  // Sheet 3: Raw Text (for reference)
+  // Raw Text sheet
   const pages = extractedText.split(/---\s*Page\s+\d+\s*---/i).filter(p => p.trim())
-  const rawTextData = [
-    ['Source File', 'Page', 'Extracted Text'],
-  ]
-
-  pages.forEach((pageText, index) => {
-    rawTextData.push([originalFilename, index + 1, pageText.trim()])
-  })
-
-  // If no pages were parsed, just put all text in one row
-  if (pages.length === 0 && extractedText.trim()) {
-    rawTextData.push([originalFilename, 1, extractedText.trim()])
+  const rawData = [['Source File', 'Page', 'Extracted Text']]
+  if (pages.length > 0) {
+    pages.forEach((pageText, i) => rawData.push([originalFilename, i + 1, pageText.trim()]))
+  } else if (extractedText.trim()) {
+    rawData.push([originalFilename, 1, extractedText.trim()])
   }
-
-  const wsRaw = XLSX.utils.aoa_to_sheet(rawTextData)
-  wsRaw['!cols'] = [
-    { wch: 40 },  // Source File
-    { wch: 8 },   // Page
-    { wch: 100 }, // Text
-  ]
+  const wsRaw = XLSX.utils.aoa_to_sheet(rawData)
   XLSX.utils.book_append_sheet(wb, wsRaw, 'Raw Text')
 
-  // Generate Excel file as array buffer
-  const xlsxBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
-
-  return new Blob([xlsxBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  return new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
 }
 
 async function uploadToDrive(blob, filename, parentFolderId, mimeType = null) {
-  // Use blob's type if mimeType not provided, fallback to application/pdf
   const fileMimeType = mimeType || blob.type || 'application/pdf'
-
-  // First, check if file already exists in the folder
   const escapedFilename = filename.replace(/'/g, "\\'")
-  // Use spaces in query (they get encoded properly by encodeURIComponent), not + signs
-  // Also add trashed=false to avoid finding trashed files
   const searchQuery = `'${parentFolderId}' in parents and name='${escapedFilename}' and trashed=false`
 
   const searchResponse = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(searchQuery)}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
-    {
-      headers: { Authorization: `Bearer ${accessToken.value}` }
-    }
+    { headers: { Authorization: `Bearer ${accessToken.value}` } }
   )
 
   let existingFileId = null
   if (searchResponse.ok) {
-    const searchData = await searchResponse.json()
-    if (searchData.files && searchData.files.length > 0) {
-      existingFileId = searchData.files[0].id
-    }
+    const data = await searchResponse.json()
+    existingFileId = data.files?.[0]?.id
   }
 
+  const form = new FormData()
   if (existingFileId) {
-    // Update existing file
-    const form = new FormData()
     form.append('metadata', new Blob([JSON.stringify({ mimeType: fileMimeType })], { type: 'application/json' }))
     form.append('file', blob)
 
     const response = await fetch(
       `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart&supportsAllDrives=true`,
-      {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${accessToken.value}` },
-        body: form
-      }
+      { method: 'PATCH', headers: { Authorization: `Bearer ${accessToken.value}` }, body: form }
     )
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}))
-      throw new Error(errorData.error?.message || 'Failed to update file on Drive')
-    }
-
+    if (!response.ok) throw new Error('Failed to update file')
     return await response.json()
   } else {
-    // Create new file
-    const metadata = {
-      name: filename,
-      parents: [parentFolderId],
-      mimeType: fileMimeType
-    }
-
-    const form = new FormData()
-    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }))
+    form.append('metadata', new Blob([JSON.stringify({ name: filename, parents: [parentFolderId], mimeType: fileMimeType })], { type: 'application/json' }))
     form.append('file', blob)
 
     const response = await fetch(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true',
-      {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken.value}` },
-        body: form
-      }
+      { method: 'POST', headers: { Authorization: `Bearer ${accessToken.value}` }, body: form }
     )
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}))
-      throw new Error(errorData.error?.message || 'Failed to upload file to Drive')
-    }
-
+    if (!response.ok) throw new Error('Failed to upload file')
     return await response.json()
   }
 }
 
 async function downloadAll() {
   if (processedFiles.value.length === 0) return
-
   const zip = new JSZip()
-
   for (const file of processedFiles.value) {
-    if (file.blob) {
-      zip.file(file.name, file.blob)
-    }
+    if (file.blob) zip.file(file.name, file.blob)
   }
-
   const zipBlob = await zip.generateAsync({ type: 'blob' })
   const url = URL.createObjectURL(zipBlob)
   const a = document.createElement('a')
@@ -1982,56 +1400,34 @@ async function downloadAll() {
   URL.revokeObjectURL(url)
 }
 
-// Helper to clear all auth data
-function clearAuthData() {
-  accessToken.value = ''
-  isAuthenticated.value = false
-  userEmail.value = ''
-  localStorage.removeItem('google_access_token')
-  localStorage.removeItem('google_token_expiry')
-  localStorage.removeItem('google_user_email')
-}
-
-// Initialize - restore auth from localStorage if valid
+// Initialize
 onMounted(async () => {
   const savedToken = localStorage.getItem('google_access_token')
   const tokenExpiry = localStorage.getItem('google_token_expiry')
   const savedEmail = localStorage.getItem('google_user_email')
 
-  if (!savedToken) return
-
-  // Check if token has expired locally
-  if (tokenExpiry && Date.now() > parseInt(tokenExpiry)) {
+  if (!savedToken || (tokenExpiry && Date.now() > parseInt(tokenExpiry))) {
     clearAuthData()
     return
   }
 
-  // Verify token with Google
   try {
     const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${savedToken}` }
     })
-
     if (response.ok) {
       const data = await response.json()
       accessToken.value = savedToken
       isAuthenticated.value = true
       userEmail.value = data.email || savedEmail || ''
-
-      // Update saved email if we got a fresh one
-      if (data.email && data.email !== savedEmail) {
-        localStorage.setItem('google_user_email', data.email)
-      }
     } else {
       clearAuthData()
     }
   } catch (err) {
-    console.error('Token validation error:', err)
-    // On network error, use cached auth data if available
     if (savedEmail) {
-      userEmail.value = savedEmail
       accessToken.value = savedToken
       isAuthenticated.value = true
+      userEmail.value = savedEmail
     } else {
       clearAuthData()
     }
@@ -2043,7 +1439,6 @@ onMounted(async () => {
 .mdi-spin {
   animation: spin 1s linear infinite;
 }
-
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
