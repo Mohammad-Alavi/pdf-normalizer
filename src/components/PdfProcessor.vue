@@ -1,70 +1,84 @@
 <template>
   <v-card class="mx-auto" max-width="900">
-    <v-card-title class="text-h5 pa-6 pb-2">
+    <v-card-title class="text-h5 pa-6 pb-2 d-flex align-center">
       <v-icon color="primary" class="mr-2">mdi-google-drive</v-icon>
       Google Drive PDF Processor
+      <v-spacer></v-spacer>
+      <v-btn
+        icon
+        variant="text"
+        color="info"
+        @click="showHelpDialog = true"
+        title="راهنمای استفاده / How to Use"
+      >
+        <v-icon>mdi-help-circle</v-icon>
+      </v-btn>
     </v-card-title>
+
+    <!-- Help Dialog -->
+    <v-dialog v-model="showHelpDialog" max-width="700">
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon class="mr-2" color="info">mdi-help-circle</v-icon>
+          راهنمای استفاده / How to Use
+          <v-spacer></v-spacer>
+          <v-btn icon variant="text" @click="showHelpDialog = false">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+        <v-card-text>
+          <div class="text-body-2" style="direction: rtl; text-align: right;">
+            <h4 class="mb-2">۱. آماده‌سازی پوشه Google Drive:</h4>
+            <ul class="mb-3">
+              <li>یک پوشه در Google Drive ایجاد کنید</li>
+              <li>فایل‌های PDF فاکتور را در این پوشه قرار دهید</li>
+              <li>نام فایل‌های PDF باید به این فرمت باشد: <code style="direction: ltr;">شماره فاکتور - نام خریدار.pdf</code></li>
+              <li>مثال: <code style="direction: ltr;">3427 - آموزشگاه زبان کوشش.pdf</code></li>
+            </ul>
+
+            <h4 class="mb-2">۲. آماده‌سازی فایل اکسل (اختیاری):</h4>
+            <ul class="mb-3">
+              <li>فایل اکسل الگو (<code>فرم جدید اطلاعات قراردادها و فاکتورها.xlsx</code>) را در همان پوشه قرار دهید</li>
+              <li>این فایل باید شیت <code>فرم جدید اطلاعات فاکتورها</code> را داشته باشد</li>
+              <li>اگر فایل اکسل موجود نباشد، فقط Master Sheet ایجاد می‌شود</li>
+            </ul>
+
+            <h4 class="mb-2">۳. اجرای برنامه:</h4>
+            <ul class="mb-3">
+              <li>لینک پوشه Google Drive را در کادر بالا وارد کنید</li>
+              <li>با حساب Google خود وارد شوید</li>
+              <li>تنظیمات را بررسی کنید و دکمه "Process PDFs" را بزنید</li>
+            </ul>
+
+            <h4 class="mb-2">۴. خروجی‌ها:</h4>
+            <ul class="mb-3">
+              <li>پوشه <code>Normalized</code> ایجاد می‌شود با زیرپوشه‌های Texts و Sheets</li>
+              <li>فایل‌های PDF نرمال‌شده در پوشه Normalized قرار می‌گیرند</li>
+              <li>فایل‌های متنی در پوشه Texts ذخیره می‌شوند</li>
+              <li>Master Sheet (Invoice Data) در پوشه Sheets ایجاد می‌شود</li>
+              <li>پوشه <code>Processed</code> ایجاد می‌شود با ساختار <code>شناسه/سال/Mostanadat</code></li>
+              <li>کپی فایل اکسل با داده‌های پر شده در پوشه Processed قرار می‌گیرد</li>
+            </ul>
+
+            <v-divider class="my-3"></v-divider>
+
+            <h4 class="mb-2" style="direction: ltr; text-align: left;">English Instructions:</h4>
+            <div style="direction: ltr; text-align: left;">
+              <p><strong>1. Prepare Google Drive folder:</strong> Create a folder and add PDF invoices with filename format: <code>InvoiceNumber - BuyerName.pdf</code></p>
+              <p><strong>2. Optional Excel template:</strong> Place the Excel template file in the same folder</p>
+              <p><strong>3. Run:</strong> Paste folder link, sign in with Google, click "Process PDFs"</p>
+              <p><strong>4. Output:</strong> Normalized folder with PDFs/texts/sheets, Processed folder with Excel and company/year/Mostanadat structure</p>
+            </div>
+          </div>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
 
     <v-card-subtitle class="px-6">
       Enter a public Google Drive folder link to process all PDFs
     </v-card-subtitle>
 
     <v-card-text class="pa-6">
-      <!-- How to Use Guide -->
-      <v-expansion-panels class="mb-4">
-        <v-expansion-panel>
-          <v-expansion-panel-title>
-            <v-icon class="mr-2" color="info">mdi-help-circle</v-icon>
-            راهنمای استفاده / How to Use
-          </v-expansion-panel-title>
-          <v-expansion-panel-text>
-            <div class="text-body-2" style="direction: rtl; text-align: right;">
-              <h4 class="mb-2">۱. آماده‌سازی پوشه Google Drive:</h4>
-              <ul class="mb-3">
-                <li>یک پوشه در Google Drive ایجاد کنید</li>
-                <li>فایل‌های PDF فاکتور را در این پوشه قرار دهید</li>
-                <li>نام فایل‌های PDF باید به این فرمت باشد: <code style="direction: ltr;">شماره فاکتور - نام خریدار.pdf</code></li>
-                <li>مثال: <code style="direction: ltr;">3427 - آموزشگاه زبان کوشش.pdf</code></li>
-              </ul>
-
-              <h4 class="mb-2">۲. آماده‌سازی فایل اکسل (اختیاری):</h4>
-              <ul class="mb-3">
-                <li>فایل اکسل الگو (<code>فرم جدید اطلاعات قراردادها و فاکتورها.xlsx</code>) را در همان پوشه قرار دهید</li>
-                <li>این فایل باید شیت <code>فرم جدید اطلاعات فاکتورها</code> را داشته باشد</li>
-                <li>اگر فایل اکسل موجود نباشد، فقط Master Sheet ایجاد می‌شود</li>
-              </ul>
-
-              <h4 class="mb-2">۳. اجرای برنامه:</h4>
-              <ul class="mb-3">
-                <li>لینک پوشه Google Drive را در کادر بالا وارد کنید</li>
-                <li>با حساب Google خود وارد شوید</li>
-                <li>تنظیمات را بررسی کنید و دکمه "Process PDFs" را بزنید</li>
-              </ul>
-
-              <h4 class="mb-2">۴. خروجی‌ها:</h4>
-              <ul class="mb-3">
-                <li>پوشه <code>Normalized</code> ایجاد می‌شود با زیرپوشه‌های Texts و Sheets</li>
-                <li>فایل‌های PDF نرمال‌شده در پوشه Normalized قرار می‌گیرند</li>
-                <li>فایل‌های متنی در پوشه Texts ذخیره می‌شوند</li>
-                <li>Master Sheet (Invoice Data) در پوشه Sheets ایجاد می‌شود</li>
-                <li>پوشه <code>Processed</code> ایجاد می‌شود با ساختار <code>شناسه/سال/Mostanadat</code></li>
-                <li>کپی فایل اکسل با داده‌های پر شده در پوشه Processed قرار می‌گیرد</li>
-              </ul>
-
-              <v-divider class="my-3"></v-divider>
-
-              <h4 class="mb-2" style="direction: ltr; text-align: left;">English Instructions:</h4>
-              <div style="direction: ltr; text-align: left;">
-                <p><strong>1. Prepare Google Drive folder:</strong> Create a folder and add PDF invoices with filename format: <code>InvoiceNumber - BuyerName.pdf</code></p>
-                <p><strong>2. Optional Excel template:</strong> Place the Excel template file in the same folder</p>
-                <p><strong>3. Run:</strong> Paste folder link, sign in with Google, click "Process PDFs"</p>
-                <p><strong>4. Output:</strong> Normalized folder with PDFs/texts/sheets, Processed folder with Excel and company/year/Mostanadat structure</p>
-              </div>
-            </div>
-          </v-expansion-panel-text>
-        </v-expansion-panel>
-      </v-expansion-panels>
-
       <!-- Drive Link Input -->
       <v-text-field
         v-model="driveLink"
@@ -443,6 +457,7 @@ const error = ref('')
 const successMessage = ref('')
 const processingLogs = ref([])
 const normalizedFolderLink = ref('')
+const showHelpDialog = ref(false)
 
 // Options
 const options = ref({
@@ -1236,10 +1251,38 @@ async function readMasterSheetData(spreadsheetId) {
   return data.values || []
 }
 
+// Helper function to set cell value while preserving existing cell properties
+function setCellValue(worksheet, cellAddress, value) {
+  const existingCell = worksheet[cellAddress]
+  if (existingCell) {
+    // Preserve existing cell properties (formatting, style, etc.) and only update the value
+    existingCell.v = value
+    // Update type based on value
+    if (typeof value === 'number') {
+      existingCell.t = 'n'
+    } else {
+      existingCell.t = 's'
+    }
+    // Clear any cached formatted value
+    delete existingCell.w
+  } else {
+    // Create new cell with just value and type (no other modifications)
+    worksheet[cellAddress] = { t: 's', v: value }
+  }
+}
+
 // Populate Excel template with mapped data from master sheet
+// IMPORTANT: This function only fills in the mapped data cells without modifying anything else
 function populateExcelTemplate(xlsxArrayBuffer, masterSheetData, targetSheetName) {
-  // Read the Excel file
-  const workbook = XLSX.read(xlsxArrayBuffer, { type: 'array' })
+  // Read the Excel file with all options to preserve formatting
+  const workbook = XLSX.read(xlsxArrayBuffer, {
+    type: 'array',
+    cellStyles: true,    // Preserve cell styles
+    cellFormula: true,   // Preserve formulas
+    cellDates: true,     // Preserve date formatting
+    cellNF: true,        // Preserve number formats
+    sheetStubs: true     // Include empty cells to preserve structure
+  })
 
   // Find the target sheet
   if (!workbook.SheetNames.includes(targetSheetName)) {
@@ -1260,36 +1303,37 @@ function populateExcelTemplate(xlsxArrayBuffer, masterSheetData, targetSheetName
     const excelRow = startRow + index
     const [invoiceNumber, date, buyerName, rowNum, description, totalAfterDiscount, taxAndDuties] = row
 
+    // Only set cell values - preserve all existing formatting and structure
     // Column C (شناسه) - Company ID from settings
-    worksheet[`C${excelRow}`] = { t: 's', v: excelSettings.value.companyId }
+    setCellValue(worksheet, `C${excelRow}`, excelSettings.value.companyId)
     // Column D (شرکت) - Company Name from settings
-    worksheet[`D${excelRow}`] = { t: 's', v: excelSettings.value.companyName }
+    setCellValue(worksheet, `D${excelRow}`, excelSettings.value.companyName)
     // Column E (سال) - Year from settings
-    worksheet[`E${excelRow}`] = { t: 's', v: excelSettings.value.year }
+    setCellValue(worksheet, `E${excelRow}`, excelSettings.value.year)
     // Column F (ردیف) - Row number from master sheet
-    worksheet[`F${excelRow}`] = { t: 's', v: rowNum || '' }
+    setCellValue(worksheet, `F${excelRow}`, rowNum || '')
     // Column G (عنوان) - Description from master sheet
-    worksheet[`G${excelRow}`] = { t: 's', v: description || '' }
+    setCellValue(worksheet, `G${excelRow}`, description || '')
     // Column H (شماره) - Invoice number from master sheet
-    worksheet[`H${excelRow}`] = { t: 's', v: invoiceNumber || '' }
+    setCellValue(worksheet, `H${excelRow}`, invoiceNumber || '')
     // Column I (تاریخ) - Date from master sheet
-    worksheet[`I${excelRow}`] = { t: 's', v: date || '' }
+    setCellValue(worksheet, `I${excelRow}`, date || '')
     // Column J (مبلغ بدون مالیات) - Total after discount from master sheet
-    worksheet[`J${excelRow}`] = { t: 's', v: totalAfterDiscount || '' }
+    setCellValue(worksheet, `J${excelRow}`, totalAfterDiscount || '')
     // Column K (مبلغ مالیات) - Tax from master sheet
-    worksheet[`K${excelRow}`] = { t: 's', v: taxAndDuties || '' }
+    setCellValue(worksheet, `K${excelRow}`, taxAndDuties || '')
     // Column L (کارفرما/خریدار) - Buyer name from master sheet
-    worksheet[`L${excelRow}`] = { t: 's', v: buyerName || '' }
+    setCellValue(worksheet, `L${excelRow}`, buyerName || '')
   })
 
-  // Update the sheet range if needed
-  const lastDataRow = startRow + dataRows.length - 1
-  if (dataRows.length > 0) {
-    worksheet['!ref'] = `A1:S${Math.max(lastDataRow, 3007)}`
-  }
+  // DO NOT modify worksheet['!ref'] - preserve the original structure exactly
 
-  // Write back to buffer
-  const xlsxBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })
+  // Write back to buffer, preserving all properties
+  const xlsxBuffer = XLSX.write(workbook, {
+    bookType: 'xlsx',
+    type: 'array',
+    cellStyles: true  // Preserve styles in output
+  })
   return new Blob([xlsxBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
 }
 
