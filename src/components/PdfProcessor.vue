@@ -1,8 +1,8 @@
 <template>
   <v-card class="mx-auto" max-width="900">
-    <v-card-title class="text-h5 pa-6 pb-2 d-flex align-center" style="direction: rtl;">
-      <v-icon color="primary" class="ml-2">mdi-file-document-edit</v-icon>
-      پردازشگر فاکتورهای PDF
+    <v-card-title class="text-h5 pa-6 pb-2 d-flex align-center">
+      <v-icon color="primary" class="mr-2">mdi-file-document-edit</v-icon>
+      PDF Invoice Processor
       <v-spacer></v-spacer>
       <v-btn
         icon

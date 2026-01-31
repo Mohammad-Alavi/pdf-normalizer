@@ -1,9 +1,10 @@
 <template>
   <v-app>
     <v-app-bar color="primary" density="compact">
-      <v-app-bar-title>
-        <v-icon class="mr-2">mdi-file-pdf-box</v-icon>
-        PDF Normalizer
+      <v-spacer></v-spacer>
+      <v-app-bar-title style="direction: rtl; text-align: right;">
+        پردازشگر فاکتورهای PDF
+        <v-icon class="ml-2">mdi-file-pdf-box</v-icon>
       </v-app-bar-title>
     </v-app-bar>
 
