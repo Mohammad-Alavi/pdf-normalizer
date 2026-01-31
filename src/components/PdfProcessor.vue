@@ -1,8 +1,8 @@
 <template>
   <v-card class="mx-auto" max-width="900">
-    <v-card-title class="text-h5 pa-6 pb-2 d-flex align-center">
-      <v-icon color="primary" class="mr-2">mdi-google-drive</v-icon>
-      Google Drive PDF Processor
+    <v-card-title class="text-h5 pa-6 pb-2 d-flex align-center" style="direction: rtl;">
+      <v-icon color="primary" class="ml-2">mdi-file-document-edit</v-icon>
+      پردازشگر فاکتورهای PDF
       <v-spacer></v-spacer>
       <v-btn
         icon
@@ -52,12 +52,10 @@
 
             <h4 class="mb-2">۴. خروجی‌ها:</h4>
             <ul class="mb-3">
-              <li>پوشه <code>Normalized</code> ایجاد می‌شود با زیرپوشه‌های Texts و Sheets</li>
-              <li>فایل‌های PDF نرمال‌شده در پوشه Normalized قرار می‌گیرند</li>
-              <li>فایل‌های متنی در پوشه Texts ذخیره می‌شوند</li>
-              <li>Master Sheet (Invoice Data) در پوشه Sheets ایجاد می‌شود</li>
               <li>پوشه <code>Processed</code> ایجاد می‌شود با ساختار <code>شناسه/سال/Mostanadat</code></li>
-              <li>کپی فایل اکسل با داده‌های پر شده در پوشه Processed قرار می‌گیرد</li>
+              <li>فایل‌های PDF پردازش‌شده در پوشه Mostanadat قرار می‌گیرند</li>
+              <li>Master Sheet (Invoice Data) در پوشه Processed ایجاد می‌شود</li>
+              <li>کپی فایل اکسل (به فرمت Google Sheets) با داده‌های پر شده در پوشه Processed قرار می‌گیرد</li>
             </ul>
 
             <v-divider class="my-3"></v-divider>
@@ -67,7 +65,7 @@
               <p><strong>1. Prepare Google Drive folder:</strong> Create a folder and add PDF invoices with filename format: <code>InvoiceNumber - BuyerName.pdf</code></p>
               <p><strong>2. Optional Excel template:</strong> Place the Excel template file in the same folder</p>
               <p><strong>3. Run:</strong> Paste folder link, sign in with Google, click "Process PDFs"</p>
-              <p><strong>4. Output:</strong> Normalized folder with PDFs/texts/sheets, Processed folder with Excel and company/year/Mostanadat structure</p>
+              <p><strong>4. Output:</strong> Processed folder with PDFs in Mostanadat, master sheet, and populated Excel (as Google Sheet)</p>
             </div>
           </div>
         </v-card-text>
@@ -212,7 +210,7 @@
         </v-expansion-panel>
       </v-expansion-panels>
 
-      <!-- Google OAuth (needed for uploading back) -->
+      <!-- Google OAuth -->
       <v-alert
         v-if="!isAuthenticated"
         type="info"
@@ -333,18 +331,18 @@
         </v-card-text>
       </v-card>
 
-      <!-- Link to Normalized folder -->
+      <!-- Link to Processed folder -->
       <v-alert
-        v-if="normalizedFolderLink"
+        v-if="processedFolderLink"
         type="info"
         variant="tonal"
         class="mb-4"
       >
         <div class="d-flex align-center">
           <v-icon class="mr-2">mdi-folder-open</v-icon>
-          <span>Normalized files uploaded to: </span>
-          <a :href="normalizedFolderLink" target="_blank" class="ml-1">
-            Open Normalized folder in Google Drive
+          <span>فایل‌های پردازش‌شده: </span>
+          <a :href="processedFolderLink" target="_blank" class="ml-1">
+            باز کردن پوشه Processed در Google Drive
           </a>
         </div>
       </v-alert>
@@ -456,7 +454,7 @@ const processedFiles = ref([])
 const error = ref('')
 const successMessage = ref('')
 const processingLogs = ref([])
-const normalizedFolderLink = ref('')
+const processedFolderLink = ref('')
 const showHelpDialog = ref(false)
 
 // Options
@@ -562,7 +560,7 @@ function formatBytes(bytes) {
 
 function addLog(type, message, details = null) {
   processingLogs.value.push({
-    id: Date.now(),
+    id: Date.now() + Math.random(),
     timestamp: new Date().toLocaleTimeString(),
     type,
     message,
@@ -582,9 +580,7 @@ async function copyLogs() {
 
   try {
     await navigator.clipboard.writeText(logText)
-    const originalLogs = [...processingLogs.value]
     addLog('success', 'Logs copied to clipboard!')
-    setTimeout(() => { processingLogs.value = originalLogs }, 2000)
   } catch (err) {
     addLog('error', 'Failed to copy logs to clipboard')
   }
@@ -686,23 +682,24 @@ async function processFiles() {
   files.value = []
   processedFiles.value = []
   progress.value = 0
-  normalizedFolderLink.value = ''
+  processedFolderLink.value = ''
   clearLogs()
 
   try {
     const folderId = extractFolderId(driveLink.value)
     addLog('info', 'Starting PDF processing', `Folder ID: ${folderId}`)
 
-    // Get or create folder structure
-    addLog('info', 'Checking for Normalized folder...')
-    const { folderId: normalizedFolderId, textsFolderId, sheetsFolderId, created } = await getOrCreateNormalizedFolder(folderId)
-    addLog('success', created ? 'Created new Normalized folder structure' : 'Found existing Normalized folder structure')
+    // Create Processed folder structure first
+    addLog('info', 'Creating Processed folder structure...')
+    const processedStructure = await getOrCreateProcessedStructure(folderId)
+    addLog('success', `Created: Processed/${excelSettings.value.companyId}/${excelSettings.value.year}/Mostanadat`)
+    processedFolderLink.value = `https://drive.google.com/drive/folders/${processedStructure.processedFolderId}`
 
-    // Get or create master Google Sheet
+    // Get or create master Google Sheet in Processed folder
     let masterSheetId = null
     try {
       addLog('info', 'Checking for master Invoice Data sheet...')
-      const { spreadsheetId, created: sheetCreated } = await getOrCreateMasterSheet(sheetsFolderId)
+      const { spreadsheetId, created: sheetCreated } = await getOrCreateMasterSheet(processedStructure.processedFolderId)
       masterSheetId = spreadsheetId
       addLog('success', sheetCreated ? 'Created new master Invoice Data sheet' : 'Found existing master Invoice Data sheet')
     } catch (sheetErr) {
@@ -714,11 +711,9 @@ async function processFiles() {
       }
     }
 
-    normalizedFolderLink.value = `https://drive.google.com/drive/folders/${normalizedFolderId}`
-
-    // Fetch PDF files
+    // Fetch PDF files from source folder
     addLog('info', 'Fetching PDF files from Google Drive...')
-    const pdfFiles = await fetchDriveFiles(folderId, normalizedFolderId)
+    const pdfFiles = await fetchDriveFiles(folderId)
     addLog('info', `Found ${pdfFiles.length} PDF file(s) to process`)
 
     if (pdfFiles.length === 0) {
@@ -757,43 +752,22 @@ async function processFiles() {
         file.blob = new Blob([processedBytes], { type: 'application/pdf' })
 
         file.status = 'uploading'
-        file.statusText = 'Uploading to Drive...'
-        await uploadToDrive(file.blob, file.name, normalizedFolderId)
-        addLog('success', `Uploaded PDF: ${file.name}`)
+        file.statusText = 'Uploading to Mostanadat...'
 
-        // Handle extracted text
-        if (options.value.ocr && extractedText?.trim()) {
-          const baseFilename = file.name.replace(/\.pdf$/i, '')
+        // Upload PDF directly to Mostanadat folder
+        await uploadToDrive(file.blob, file.name, processedStructure.mostanadatFolderId)
+        addLog('success', `Uploaded PDF to Mostanadat: ${file.name}`)
 
-          // Upload TXT
+        // Handle extracted text - append to master sheet
+        if (options.value.ocr && extractedText?.trim() && masterSheetId) {
           try {
-            const textBlob = new Blob([extractedText], { type: 'text/plain;charset=utf-8' })
-            await uploadToDrive(textBlob, `${baseFilename}.txt`, textsFolderId, 'text/plain')
-            addLog('success', `Uploaded text file: ${baseFilename}.txt`)
-          } catch (err) {
-            addLog('warning', `Failed to upload text file`, err.message)
-          }
-
-          // Upload XLSX
-          try {
-            const xlsxBlob = createExcelFromText(extractedText, file.name)
-            await uploadToDrive(xlsxBlob, `${baseFilename}.xlsx`, sheetsFolderId, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-            addLog('success', `Uploaded Excel file: ${baseFilename}.xlsx`)
-          } catch (err) {
-            addLog('warning', `Failed to upload Excel file`, err.message)
-          }
-
-          // Append to master sheet
-          if (masterSheetId) {
-            try {
-              const invoiceData = parseInvoiceText(extractedText, file.name)
-              if (invoiceData?.items?.length > 0) {
-                await appendToMasterSheet(masterSheetId, invoiceData)
-                addLog('success', `Appended ${invoiceData.items.length} row(s) to master sheet`)
-              }
-            } catch (err) {
-              addLog('warning', `Failed to append to master sheet`, err.message)
+            const invoiceData = parseInvoiceText(extractedText, file.name)
+            if (invoiceData?.items?.length > 0) {
+              await appendToMasterSheet(masterSheetId, invoiceData)
+              addLog('success', `Appended ${invoiceData.items.length} row(s) to master sheet`)
             }
+          } catch (err) {
+            addLog('warning', `Failed to append to master sheet`, err.message)
           }
         }
 
@@ -812,11 +786,11 @@ async function processFiles() {
 
     const successCount = files.value.filter(f => f.status === 'done').length
 
-    // Process Excel template
+    // Process Excel template - copy as Google Sheet and populate
     if (masterSheetId && successCount > 0) {
       try {
         addLog('info', 'Starting Excel template processing...')
-        await processExcelTemplate(folderId, masterSheetId)
+        await processExcelTemplate(folderId, masterSheetId, processedStructure.processedFolderId)
         addLog('success', 'Excel template processing complete')
       } catch (err) {
         addLog('warning', 'Failed to process Excel template', err.message)
@@ -837,10 +811,10 @@ async function processFiles() {
 }
 
 // Google Drive API functions
-async function fetchDriveFiles(folderId, normalizedFolderId = null) {
+async function fetchDriveFiles(folderId) {
   const query = `'${folderId}' in parents and mimeType='application/pdf' and trashed=false`
   const response = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,size,parents)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,size)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     { headers: { Authorization: `Bearer ${accessToken.value}` } }
   )
 
@@ -863,7 +837,6 @@ async function fetchDriveFiles(folderId, normalizedFolderId = null) {
 
     if (nameLower.startsWith('temp_') || nameLower.startsWith('normalized_')) return false
     if (!nameLower.endsWith('.pdf')) return false
-    if (normalizedFolderId && file.parents?.includes(normalizedFolderId)) return false
 
     return true
   })
@@ -901,19 +874,18 @@ async function getOrCreateFolder(parentFolderId, folderName) {
   return { folderId: createData.id, created: true }
 }
 
-async function getOrCreateNormalizedFolder(parentFolderId) {
-  const normalized = await getOrCreateFolder(parentFolderId, 'Normalized')
-  const texts = await getOrCreateFolder(normalized.folderId, 'Texts')
-  const sheets = await getOrCreateFolder(normalized.folderId, 'Sheets')
-  return { folderId: normalized.folderId, textsFolderId: texts.folderId, sheetsFolderId: sheets.folderId, created: normalized.created }
-}
-
 async function getOrCreateProcessedStructure(parentFolderId) {
   const processed = await getOrCreateFolder(parentFolderId, 'Processed')
   const company = await getOrCreateFolder(processed.folderId, excelSettings.value.companyId)
   const year = await getOrCreateFolder(company.folderId, excelSettings.value.year)
   const mostanadat = await getOrCreateFolder(year.folderId, 'Mostanadat')
-  return { processedFolderId: processed.folderId, mostanadatFolderId: mostanadat.folderId, created: processed.created }
+  return {
+    processedFolderId: processed.folderId,
+    companyFolderId: company.folderId,
+    yearFolderId: year.folderId,
+    mostanadatFolderId: mostanadat.folderId,
+    created: processed.created
+  }
 }
 
 async function getOrCreateMasterSheet(sheetsFolderId) {
@@ -947,7 +919,7 @@ async function getOrCreateMasterSheet(sheetsFolderId) {
   const sheetData = await createResponse.json()
   const spreadsheetId = sheetData.spreadsheetId
 
-  // Move to Sheets folder
+  // Move to target folder
   const fileResponse = await fetch(`https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=parents`, {
     headers: { Authorization: `Bearer ${accessToken.value}` }
   })
@@ -1027,23 +999,28 @@ async function readMasterSheetData(spreadsheetId) {
   return data.values || []
 }
 
-// Copy file using Google Drive API
-async function copyFileInDrive(fileId, newName, destinationFolderId) {
+// Copy xlsx file and convert to Google Sheets format (equivalent to "Save as Google Sheets" in UI)
+async function copyAndConvertToGoogleSheet(fileId, newName, destinationFolderId) {
   const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/copy?supportsAllDrives=true`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken.value}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: newName, parents: [destinationFolderId] })
+    body: JSON.stringify({
+      name: newName,
+      parents: [destinationFolderId],
+      // This mimeType converts xlsx to native Google Sheets format
+      mimeType: 'application/vnd.google-apps.spreadsheet'
+    })
   })
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(`Failed to copy file: ${errorData.error?.message || 'Unknown error'}`)
+    throw new Error(`Failed to copy and convert file: ${errorData.error?.message || 'Unknown error'}`)
   }
 
   return await response.json()
 }
 
-// Update cells in Google Sheets (triggers formula recalculation)
+// Update cells in Google Sheets (triggers formula recalculation automatically)
 async function updateSheetCells(spreadsheetId, sheetName, cellUpdates) {
   const data = cellUpdates.map(update => ({
     range: `'${sheetName}'!${update.cell}`,
@@ -1064,8 +1041,8 @@ async function updateSheetCells(spreadsheetId, sheetName, cellUpdates) {
   return await response.json()
 }
 
-// Process Excel template using Google Drive copy + Sheets API
-async function processExcelTemplate(sourceFolderId, masterSheetId) {
+// Process Excel template: copy as Google Sheet and populate with data
+async function processExcelTemplate(sourceFolderId, masterSheetId, processedFolderId) {
   const filename = excelSettings.value.filename
   const sheetName = excelSettings.value.sheetName
 
@@ -1079,6 +1056,7 @@ async function processExcelTemplate(sourceFolderId, masterSheetId) {
 
   addLog('success', `Found Excel template: ${templateFile.name}`)
 
+  // Read master sheet data
   const masterSheetData = await readMasterSheetData(masterSheetId)
   const dataRowCount = masterSheetData.length - 1
 
@@ -1089,19 +1067,16 @@ async function processExcelTemplate(sourceFolderId, masterSheetId) {
 
   addLog('info', `Read ${dataRowCount} data row(s) from master sheet`)
 
-  const processedStructure = await getOrCreateProcessedStructure(sourceFolderId)
-  addLog('success', `Created Processed folder structure`)
+  // Copy xlsx and convert to Google Sheets format (this enables Sheets API updates and formula recalculation)
+  const outputFilename = `${filename} - پردازش شده`
+  addLog('info', `Copying Excel template as Google Sheet...`)
+  const copiedFile = await copyAndConvertToGoogleSheet(templateFile.id, outputFilename, processedFolderId)
+  addLog('success', `Created Google Sheet: ${outputFilename}`)
 
-  // Copy the Excel file using Google Drive API
-  const outputFilename = `${filename}.xlsx`
-  addLog('info', `Copying Excel template to Processed folder`)
-  const copiedFile = await copyFileInDrive(templateFile.id, outputFilename, processedStructure.processedFolderId)
-  addLog('success', `Copied Excel template: ${outputFilename}`)
-
-  // Build cell updates
+  // Build cell updates from master sheet data
   const cellUpdates = []
-  const dataRows = masterSheetData.slice(1)
-  const startRow = 8
+  const dataRows = masterSheetData.slice(1) // Skip header
+  const startRow = 8 // Excel data starts at row 8
 
   dataRows.forEach((row, index) => {
     const excelRow = startRow + index
@@ -1121,9 +1096,9 @@ async function processExcelTemplate(sourceFolderId, masterSheetId) {
     )
   })
 
-  addLog('info', `Updating ${cellUpdates.length} cells (formulas will recalculate)`)
+  addLog('info', `Updating ${cellUpdates.length} cells (formulas will auto-recalculate)...`)
   await updateSheetCells(copiedFile.id, sheetName, cellUpdates)
-  addLog('success', 'Excel template populated with formula recalculation')
+  addLog('success', 'Data populated successfully - formulas recalculated')
 
   return copiedFile
 }
@@ -1203,7 +1178,7 @@ async function processPdf(pdfBytes, filename, onProgress = null) {
     }
 
     pdfDoc.setTitle(filename.replace('.pdf', ''))
-    pdfDoc.setProducer('PDF Normalizer')
+    pdfDoc.setProducer('PDF Processor')
     pdfDoc.setModificationDate(new Date())
 
     const processedPdfBytes = await pdfDoc.save(options.value.compress ? { useObjectStreams: true } : {})
@@ -1299,50 +1274,6 @@ function parseInvoiceText(text, filename = '') {
   return result
 }
 
-function createExcelFromText(extractedText, originalFilename) {
-  const wb = XLSX.utils.book_new()
-  const invoiceData = parseInvoiceText(extractedText, originalFilename)
-
-  // Invoice Data sheet
-  const invoiceSheetData = [['شماره', 'تاریخ', 'نام شخص حقیقی / حقوقی', 'ردیف', 'شرح کالا یا خدمات', 'مبلغ کل پس از تخفیف', 'جمع مالیات و عوارض']]
-  if (invoiceData?.items?.length > 0) {
-    invoiceData.items.forEach(item => {
-      invoiceSheetData.push([invoiceData.invoiceNumber, invoiceData.date, invoiceData.buyerName, item.rowNumber, item.description, item.totalAfterDiscount, item.taxAndDuties])
-    })
-  } else {
-    invoiceSheetData.push([invoiceData?.invoiceNumber || '', invoiceData?.date || '', invoiceData?.buyerName || '', '', '', '', ''])
-  }
-
-  const wsInvoice = XLSX.utils.aoa_to_sheet(invoiceSheetData)
-  wsInvoice['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 40 }, { wch: 8 }, { wch: 35 }, { wch: 20 }, { wch: 20 }]
-  wsInvoice['!dir'] = 'rtl'
-  XLSX.utils.book_append_sheet(wb, wsInvoice, 'Invoice Data')
-
-  // Full Item Details sheet
-  if (invoiceData?.items?.length > 0) {
-    const fullData = [['ردیف', 'شرح کالا یا خدمات', 'تعداد', 'مبلغ واحد', 'مبلغ کل', 'مبلغ تخفیف', 'مبلغ کل پس از تخفیف', 'جمع مالیات و عوارض', 'جمع مبلغ کل بعد از مالیات']]
-    invoiceData.items.forEach(item => {
-      fullData.push([item.rowNumber, item.description, item.quantity, item.unitPrice, item.total, item.discount, item.totalAfterDiscount, item.taxAndDuties, item.grandTotal])
-    })
-    const wsFull = XLSX.utils.aoa_to_sheet(fullData)
-    wsFull['!dir'] = 'rtl'
-    XLSX.utils.book_append_sheet(wb, wsFull, 'Full Item Details')
-  }
-
-  // Raw Text sheet
-  const pages = extractedText.split(/---\s*Page\s+\d+\s*---/i).filter(p => p.trim())
-  const rawData = [['Source File', 'Page', 'Extracted Text']]
-  if (pages.length > 0) {
-    pages.forEach((pageText, i) => rawData.push([originalFilename, i + 1, pageText.trim()]))
-  } else if (extractedText.trim()) {
-    rawData.push([originalFilename, 1, extractedText.trim()])
-  }
-  const wsRaw = XLSX.utils.aoa_to_sheet(rawData)
-  XLSX.utils.book_append_sheet(wb, wsRaw, 'Raw Text')
-
-  return new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-}
-
 async function uploadToDrive(blob, filename, parentFolderId, mimeType = null) {
   const fileMimeType = mimeType || blob.type || 'application/pdf'
   const escapedFilename = filename.replace(/'/g, "\\'")
@@ -1393,7 +1324,7 @@ async function downloadAll() {
   const url = URL.createObjectURL(zipBlob)
   const a = document.createElement('a')
   a.href = url
-  a.download = 'normalized_pdfs.zip'
+  a.download = 'processed_pdfs.zip'
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
