@@ -254,8 +254,8 @@
         </div>
       </v-alert>
 
-      <!-- Action Buttons -->
-      <div class="d-flex mb-4" style="gap: 16px;">
+      <!-- Action Button -->
+      <div class="d-flex mb-4">
         <v-btn
           color="primary"
           size="large"
@@ -265,16 +265,6 @@
         >
           <v-icon class="mr-2">mdi-play</v-icon>
           Process PDFs
-        </v-btn>
-        <v-btn
-          v-if="processedFiles.length > 0"
-          color="secondary"
-          size="large"
-          variant="outlined"
-          @click="downloadAll"
-        >
-          <v-icon class="mr-2">mdi-download</v-icon>
-          Download All (ZIP)
         </v-btn>
       </div>
 
@@ -432,10 +422,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { PDFDocument } from 'pdf-lib'
-import JSZip from 'jszip'
 import Tesseract from 'tesseract.js'
 import * as pdfjsLib from 'pdfjs-dist'
-import * as XLSX from 'xlsx'
 
 // Configure PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
@@ -450,7 +438,6 @@ const userEmail = ref('')
 const accessToken = ref('')
 const progress = ref(0)
 const files = ref([])
-const processedFiles = ref([])
 const error = ref('')
 const successMessage = ref('')
 const processingLogs = ref([])
@@ -680,7 +667,6 @@ async function processFiles() {
   error.value = ''
   successMessage.value = ''
   files.value = []
-  processedFiles.value = []
   progress.value = 0
   processedFolderLink.value = ''
   clearLogs()
@@ -754,9 +740,13 @@ async function processFiles() {
         file.status = 'uploading'
         file.statusText = 'Uploading to Mostanadat...'
 
-        // Upload PDF directly to Mostanadat folder
-        await uploadToDrive(file.blob, file.name, processedStructure.mostanadatFolderId)
-        addLog('success', `Uploaded PDF to Mostanadat: ${file.name}`)
+        // Extract invoice number from filename and rename PDF (e.g., "3427 - آموزشگاه.pdf" → "3427.pdf")
+        const invoiceNumber = parseFilename(file.name).invoiceNumber
+        const newPdfName = invoiceNumber ? `${invoiceNumber}.pdf` : file.name
+
+        // Upload PDF directly to Mostanadat folder with renamed filename
+        await uploadToDrive(file.blob, newPdfName, processedStructure.mostanadatFolderId)
+        addLog('success', `Uploaded PDF to Mostanadat: ${newPdfName}`)
 
         // Handle extracted text - append to master sheet
         if (options.value.ocr && extractedText?.trim() && masterSheetId) {
@@ -773,7 +763,6 @@ async function processFiles() {
 
         file.status = 'done'
         file.statusText = `Complete (${formatBytes(file.originalSize)} → ${formatBytes(file.processedSize)})`
-        processedFiles.value.push(file)
 
       } catch (err) {
         file.status = 'error'
@@ -792,6 +781,15 @@ async function processFiles() {
         addLog('info', 'Starting Excel template processing...')
         await processExcelTemplate(folderId, masterSheetId, processedStructure.processedFolderId)
         addLog('success', 'Excel template processing complete')
+
+        // Delete the temporary Invoice Data sheet after processing
+        try {
+          addLog('info', 'Cleaning up: Deleting Invoice Data sheet...')
+          await deleteFileFromDrive(masterSheetId)
+          addLog('success', 'Deleted Invoice Data sheet')
+        } catch (deleteErr) {
+          addLog('warning', 'Failed to delete Invoice Data sheet', deleteErr.message)
+        }
       } catch (err) {
         addLog('warning', 'Failed to process Excel template', err.message)
       }
@@ -1068,10 +1066,10 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
   addLog('info', `Read ${dataRowCount} data row(s) from master sheet`)
 
   // Copy xlsx and convert to Google Sheets format (this enables Sheets API updates and formula recalculation)
-  const outputFilename = `${filename} - پردازش شده`
+  // Keep original filename
   addLog('info', `Copying Excel template as Google Sheet...`)
-  const copiedFile = await copyAndConvertToGoogleSheet(templateFile.id, outputFilename, processedFolderId)
-  addLog('success', `Created Google Sheet: ${outputFilename}`)
+  const copiedFile = await copyAndConvertToGoogleSheet(templateFile.id, filename, processedFolderId)
+  addLog('success', `Created Google Sheet: ${filename}`)
 
   // Build cell updates from master sheet data
   const cellUpdates = []
@@ -1109,6 +1107,19 @@ async function downloadFile(fileId) {
   })
   if (!response.ok) throw new Error('Failed to download file')
   return await response.arrayBuffer()
+}
+
+// Delete a file from Google Drive
+async function deleteFileFromDrive(fileId) {
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken.value}` }
+  })
+  if (!response.ok && response.status !== 204) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(`Failed to delete file: ${errorData.error?.message || 'Unknown error'}`)
+  }
+  return true
 }
 
 async function processPdf(pdfBytes, filename, onProgress = null) {
@@ -1312,23 +1323,6 @@ async function uploadToDrive(blob, filename, parentFolderId, mimeType = null) {
     if (!response.ok) throw new Error('Failed to upload file')
     return await response.json()
   }
-}
-
-async function downloadAll() {
-  if (processedFiles.value.length === 0) return
-  const zip = new JSZip()
-  for (const file of processedFiles.value) {
-    if (file.blob) zip.file(file.name, file.blob)
-  }
-  const zipBlob = await zip.generateAsync({ type: 'blob' })
-  const url = URL.createObjectURL(zipBlob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'processed_pdfs.zip'
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
 }
 
 // Initialize
