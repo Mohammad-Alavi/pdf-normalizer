@@ -43,10 +43,11 @@
 
               <h4 class="mb-2">۴. خروجی‌ها:</h4>
               <ul class="mb-3">
-                <li>پوشه <code>Processed</code> ایجاد می‌شود با زیرپوشه‌های Texts و Sheets</li>
-                <li>فایل‌های PDF نرمال‌شده در پوشه Processed قرار می‌گیرند</li>
+                <li>پوشه <code>Normalized</code> ایجاد می‌شود با زیرپوشه‌های Texts و Sheets</li>
+                <li>فایل‌های PDF نرمال‌شده در پوشه Normalized قرار می‌گیرند</li>
                 <li>فایل‌های متنی در پوشه Texts ذخیره می‌شوند</li>
                 <li>Master Sheet (Invoice Data) در پوشه Sheets ایجاد می‌شود</li>
+                <li>پوشه <code>Processed</code> ایجاد می‌شود با ساختار <code>شناسه/سال/Mostanadat</code></li>
                 <li>کپی فایل اکسل با داده‌های پر شده در پوشه Processed قرار می‌گیرد</li>
               </ul>
 
@@ -57,7 +58,7 @@
                 <p><strong>1. Prepare Google Drive folder:</strong> Create a folder and add PDF invoices with filename format: <code>InvoiceNumber - BuyerName.pdf</code></p>
                 <p><strong>2. Optional Excel template:</strong> Place the Excel template file in the same folder</p>
                 <p><strong>3. Run:</strong> Paste folder link, sign in with Google, click "Process PDFs"</p>
-                <p><strong>4. Output:</strong> Processed folder with normalized PDFs, text files, and populated Excel</p>
+                <p><strong>4. Output:</strong> Normalized folder with PDFs/texts/sheets, Processed folder with Excel and company/year/Mostanadat structure</p>
               </div>
             </div>
           </v-expansion-panel-text>
@@ -318,18 +319,18 @@
         </v-card-text>
       </v-card>
 
-      <!-- Link to Processed folder -->
+      <!-- Link to Normalized folder -->
       <v-alert
-        v-if="processedFolderLink"
+        v-if="normalizedFolderLink"
         type="info"
         variant="tonal"
         class="mb-4"
       >
         <div class="d-flex align-center">
           <v-icon class="mr-2">mdi-folder-open</v-icon>
-          <span>Processed files uploaded to: </span>
-          <a :href="processedFolderLink" target="_blank" class="ml-1">
-            Open Processed folder in Google Drive
+          <span>Normalized files uploaded to: </span>
+          <a :href="normalizedFolderLink" target="_blank" class="ml-1">
+            Open Normalized folder in Google Drive
           </a>
         </div>
       </v-alert>
@@ -441,7 +442,7 @@ const processedFiles = ref([])
 const error = ref('')
 const successMessage = ref('')
 const processingLogs = ref([])
-const processedFolderLink = ref('')
+const normalizedFolderLink = ref('')
 
 // Options
 const options = ref({
@@ -702,21 +703,21 @@ async function processFiles() {
   files.value = []
   processedFiles.value = []
   progress.value = 0
-  processedFolderLink.value = ''
+  normalizedFolderLink.value = ''
   clearLogs()
 
   try {
     const folderId = extractFolderId(driveLink.value)
     addLog('info', 'Starting PDF processing', `Folder ID: ${folderId}`)
 
-    // Get or create the "Processed" subfolder
-    addLog('info', 'Checking for Processed folder...')
-    const { folderId: processedFolderId, textsFolderId, sheetsFolderId, created } = await getOrCreateProcessedFolder(folderId)
+    // Get or create the "Normalized" subfolder (for PDFs, Texts, Sheets)
+    addLog('info', 'Checking for Normalized folder...')
+    const { folderId: normalizedFolderId, textsFolderId, sheetsFolderId, created } = await getOrCreateNormalizedFolder(folderId)
 
     if (created) {
-      addLog('success', 'Created new Processed folder structure', `Main: ${processedFolderId}, Texts: ${textsFolderId}, Sheets: ${sheetsFolderId}`)
+      addLog('success', 'Created new Normalized folder structure', `Main: ${normalizedFolderId}, Texts: ${textsFolderId}, Sheets: ${sheetsFolderId}`)
     } else {
-      addLog('success', 'Found existing Processed folder structure', `Main: ${processedFolderId}, Texts: ${textsFolderId}, Sheets: ${sheetsFolderId}`)
+      addLog('success', 'Found existing Normalized folder structure', `Main: ${normalizedFolderId}, Texts: ${textsFolderId}, Sheets: ${sheetsFolderId}`)
     }
 
     // Get or create the master Google Sheet for all invoice data
@@ -746,12 +747,12 @@ async function processFiles() {
       }
     }
 
-    // Set the link to open the folder
-    processedFolderLink.value = `https://drive.google.com/drive/folders/${processedFolderId}`
+    // Set the link to open the Normalized folder
+    normalizedFolderLink.value = `https://drive.google.com/drive/folders/${normalizedFolderId}`
 
-    // Fetch files from Google Drive (excluding files already in Processed folder)
+    // Fetch files from Google Drive (excluding files already in Normalized folder)
     addLog('info', 'Fetching PDF files from Google Drive...')
-    const pdfFiles = await fetchDriveFiles(folderId, processedFolderId)
+    const pdfFiles = await fetchDriveFiles(folderId, normalizedFolderId)
     addLog('info', `Found ${pdfFiles.length} PDF file(s) to process`, pdfFiles.map(f => f.name).join(', '))
 
     if (pdfFiles.length === 0) {
@@ -803,11 +804,11 @@ async function processFiles() {
         const sizeChangeText = sizeChange > 0 ? `Reduced by ${formatBytes(sizeChange)}` : sizeChange < 0 ? `Increased by ${formatBytes(Math.abs(sizeChange))}` : 'No size change'
         addLog('success', `Processed: ${file.name}`, `${formatBytes(file.originalSize)} → ${formatBytes(file.processedSize)} (${sizeChangeText})`)
 
-        // Upload back to Drive (to Processed folder)
+        // Upload back to Drive (to Normalized folder)
         file.status = 'uploading'
         file.statusText = 'Uploading to Drive...'
         addLog('info', `Uploading PDF to Drive: ${file.name}`)
-        const uploadResult = await uploadToDrive(file.blob, file.name, processedFolderId)
+        const uploadResult = await uploadToDrive(file.blob, file.name, normalizedFolderId)
         addLog('success', `Uploaded PDF to Drive: ${file.name}`, `File ID: ${uploadResult.id}`)
 
         // If text extraction was enabled and text was extracted, upload both TXT and XLSX files
@@ -882,7 +883,7 @@ async function processFiles() {
     if (masterSheetId && successCount > 0) {
       try {
         addLog('info', 'Starting Excel template processing...')
-        const excelResult = await processExcelTemplate(folderId, processedFolderId, masterSheetId)
+        const excelResult = await processExcelTemplate(folderId, masterSheetId)
         if (excelResult) {
           addLog('success', 'Excel template processing complete')
         }
@@ -907,8 +908,8 @@ async function processFiles() {
   }
 }
 
-async function fetchDriveFiles(folderId, processedFolderId = null) {
-  // Build query to get PDFs from the main folder only (not from Processed subfolder)
+async function fetchDriveFiles(folderId, normalizedFolderId = null) {
+  // Build query to get PDFs from the main folder only (not from Normalized subfolder)
   // Use spaces in query (they get encoded properly), not + signs
   const query = `'${folderId}' in parents and mimeType='application/pdf' and trashed=false`
 
@@ -950,8 +951,8 @@ async function fetchDriveFiles(folderId, processedFolderId = null) {
     // Only include files with .pdf extension
     if (!nameLower.endsWith('.pdf')) return false
 
-    // Skip files that are in the Processed subfolder
-    if (processedFolderId && file.parents && file.parents.includes(processedFolderId)) {
+    // Skip files that are in the Normalized subfolder
+    if (normalizedFolderId && file.parents && file.parents.includes(normalizedFolderId)) {
       return false
     }
 
@@ -1006,21 +1007,52 @@ async function getOrCreateFolder(parentFolderId, folderName) {
   return { folderId: createData.id, created: true }
 }
 
-async function getOrCreateProcessedFolder(parentFolderId) {
+// Get or create "Normalized" folder with Texts and Sheets subfolders
+async function getOrCreateNormalizedFolder(parentFolderId) {
+  // Get or create main Normalized folder
+  const normalizedResult = await getOrCreateFolder(parentFolderId, 'Normalized')
+  const normalizedFolderId = normalizedResult.folderId
+
+  // Get or create Texts subfolder
+  const textsResult = await getOrCreateFolder(normalizedFolderId, 'Texts')
+
+  // Get or create Sheets subfolder
+  const sheetsResult = await getOrCreateFolder(normalizedFolderId, 'Sheets')
+
+  return {
+    folderId: normalizedFolderId,
+    textsFolderId: textsResult.folderId,
+    sheetsFolderId: sheetsResult.folderId,
+    created: normalizedResult.created
+  }
+}
+
+// Get or create "Processed" folder structure: Processed/{companyId}/{year}/Mostanadat
+async function getOrCreateProcessedStructure(parentFolderId) {
+  const companyId = excelSettings.value.companyId
+  const year = excelSettings.value.year
+
   // Get or create main Processed folder
   const processedResult = await getOrCreateFolder(parentFolderId, 'Processed')
   const processedFolderId = processedResult.folderId
 
-  // Get or create Texts subfolder
-  const textsResult = await getOrCreateFolder(processedFolderId, 'Texts')
+  // Get or create company ID subfolder (e.g., "10260538003")
+  const companyResult = await getOrCreateFolder(processedFolderId, companyId)
+  const companyFolderId = companyResult.folderId
 
-  // Get or create Sheets subfolder
-  const sheetsResult = await getOrCreateFolder(processedFolderId, 'Sheets')
+  // Get or create year subfolder (e.g., "1403")
+  const yearResult = await getOrCreateFolder(companyFolderId, year)
+  const yearFolderId = yearResult.folderId
+
+  // Get or create Mostanadat subfolder
+  const mostanadatResult = await getOrCreateFolder(yearFolderId, 'Mostanadat')
+  const mostanadatFolderId = mostanadatResult.folderId
 
   return {
-    folderId: processedFolderId,
-    textsFolderId: textsResult.folderId,
-    sheetsFolderId: sheetsResult.folderId,
+    processedFolderId: processedFolderId,  // Root Processed folder (for Excel file)
+    companyFolderId: companyFolderId,
+    yearFolderId: yearFolderId,
+    mostanadatFolderId: mostanadatFolderId,
     created: processedResult.created
   }
 }
@@ -1261,8 +1293,8 @@ function populateExcelTemplate(xlsxArrayBuffer, masterSheetData, targetSheetName
   return new Blob([xlsxBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
 }
 
-// Process Excel template: find, download, populate, and upload
-async function processExcelTemplate(sourceFolderId, processedFolderId, masterSheetId) {
+// Process Excel template: find, download, populate, and upload to Processed folder
+async function processExcelTemplate(sourceFolderId, masterSheetId) {
   const filename = excelSettings.value.filename
   const sheetName = excelSettings.value.sheetName
 
@@ -1298,10 +1330,15 @@ async function processExcelTemplate(sourceFolderId, processedFolderId, masterShe
   const populatedExcelBlob = populateExcelTemplate(xlsxArrayBuffer, masterSheetData, sheetName)
   addLog('success', 'Excel template populated successfully')
 
-  // Upload the populated Excel to Processed folder
+  // Create the Processed folder structure: Processed/{companyId}/{year}/Mostanadat
+  addLog('info', 'Creating Processed folder structure...')
+  const processedStructure = await getOrCreateProcessedStructure(sourceFolderId)
+  addLog('success', `Created Processed folder structure: Processed/${excelSettings.value.companyId}/${excelSettings.value.year}/Mostanadat`)
+
+  // Upload the populated Excel directly to Processed folder (not in subfolders)
   const outputFilename = `${filename}.xlsx`
   addLog('info', `Uploading populated Excel to Processed folder: ${outputFilename}`)
-  const uploadResult = await uploadToDrive(populatedExcelBlob, outputFilename, processedFolderId, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  const uploadResult = await uploadToDrive(populatedExcelBlob, outputFilename, processedStructure.processedFolderId, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   addLog('success', `Uploaded populated Excel: ${outputFilename}`, `File ID: ${uploadResult.id}`)
 
   return uploadResult
