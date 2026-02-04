@@ -1081,7 +1081,10 @@ async function updateSheetCells(spreadsheetId, sheetName, cellUpdates) {
 }
 
 // Process Excel template: duplicate to Processed folder, edit via Sheets API, export back to xlsx
-// This ensures: 1) Original xlsx is NEVER modified, 2) Output is xlsx format with formulas recalculated
+// Flow: 1) Duplicate original xlsx AS-IS to Processed folder
+//       2) Convert the DUPLICATE (not original!) to temp Google Sheet for editing
+//       3) Edit temp sheet, export back to xlsx, delete temp sheet
+// This ensures: Original xlsx is NEVER touched
 async function processExcelTemplate(sourceFolderId, masterSheetId, processedFolderId) {
   const filename = excelSettings.value.filename
   const sheetName = excelSettings.value.sheetName
@@ -1095,9 +1098,8 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
   }
 
   addLog('success', `Found Excel template: ${templateFile.name} (ID: ${templateFile.id})`)
-  addLog('info', `Original file will NOT be modified - creating a copy...`)
 
-  // Read master sheet data
+  // Read master sheet data first
   const masterSheetData = await readMasterSheetData(masterSheetId)
   const dataRowCount = masterSheetData.length - 1
 
@@ -1108,11 +1110,18 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
 
   addLog('info', `Read ${dataRowCount} data row(s) from master sheet`)
 
-  // Step 1: Create a TEMPORARY Google Sheets version from original xlsx for editing
+  // Step 1: DUPLICATE the original xlsx AS-IS to Processed folder
+  // This creates an exact copy, preserving all formatting, formulas, macros, etc.
+  // The ORIGINAL file is NEVER modified!
+  addLog('info', `Duplicating original xlsx to Processed folder (original will NOT be modified)...`)
+  const duplicatedXlsx = await duplicateXlsxFile(templateFile.id, filename, processedFolderId)
+  addLog('success', `Created duplicate: ${filename}.xlsx (ID: ${duplicatedXlsx.id})`)
+
+  // Step 2: Convert the DUPLICATE (not original!) to temp Google Sheet for editing
   // We use Google Sheets format temporarily because Sheets API can update cells and recalculate formulas
-  addLog('info', `Creating temporary Google Sheet for editing...`)
+  addLog('info', `Converting duplicate to temporary Google Sheet for editing...`)
   const tempSheetName = `_TEMP_${filename}_${Date.now()}`
-  const tempSheet = await convertXlsxToGoogleSheet(templateFile.id, tempSheetName, processedFolderId)
+  const tempSheet = await convertXlsxToGoogleSheet(duplicatedXlsx.id, tempSheetName, processedFolderId)
   addLog('success', `Created temporary Google Sheet for editing`)
 
   // Build cell updates from master sheet data
@@ -1138,17 +1147,27 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
     )
   })
 
-  // Step 2: Update cells in the temporary Google Sheet (formulas auto-recalculate)
+  // Step 3: Update cells in the temporary Google Sheet (formulas auto-recalculate)
   addLog('info', `Updating ${cellUpdates.length} cells (formulas will auto-recalculate)...`)
   await updateSheetCells(tempSheet.id, sheetName, cellUpdates)
   addLog('success', 'Data populated successfully - formulas recalculated')
 
-  // Step 3: Export the edited Google Sheet back to xlsx format
+  // Step 4: Export the edited Google Sheet back to xlsx format
+  // This overwrites the duplicate we created in step 1
   addLog('info', `Exporting to xlsx format: ${filename}.xlsx`)
   const exportedFile = await exportSheetToXlsx(tempSheet.id, filename, processedFolderId)
-  addLog('success', `Created xlsx file: ${filename}.xlsx`)
+  addLog('success', `Updated xlsx file: ${filename}.xlsx`)
 
-  // Step 4: Delete the temporary Google Sheet (cleanup)
+  // Step 5: Delete the unedited duplicate xlsx (we have the updated version now)
+  try {
+    addLog('info', 'Cleaning up unedited duplicate xlsx...')
+    await deleteFileFromDrive(duplicatedXlsx.id)
+    addLog('success', 'Deleted unedited duplicate')
+  } catch (deleteErr) {
+    addLog('warning', 'Failed to delete unedited duplicate', deleteErr.message)
+  }
+
+  // Step 6: Delete the temporary Google Sheet (cleanup)
   try {
     addLog('info', 'Cleaning up temporary Google Sheet...')
     await deleteFileFromDrive(tempSheet.id)
@@ -1157,7 +1176,7 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
     addLog('warning', 'Failed to delete temporary sheet', deleteErr.message)
   }
 
-  addLog('success', `Excel processing complete - original file unchanged, new xlsx in Processed folder`)
+  addLog('success', `Excel processing complete - original file unchanged, updated xlsx in Processed folder`)
   return exportedFile
 }
 
