@@ -971,16 +971,49 @@ async function appendToMasterSheet(spreadsheetId, invoiceData) {
 
 async function findExcelTemplateFile(folderId, filename) {
   const xlsxFilename = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`
-  const query = `'${folderId}' in parents and name='${xlsxFilename}' and trashed=false`
 
-  const response = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+  // First, list ALL xlsx files in the folder for debugging
+  const listQuery = `'${folderId}' in parents and (mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or mimeType='application/vnd.ms-excel') and trashed=false`
+  const listResponse = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(listQuery)}&fields=files(id,name,mimeType)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     { headers: { Authorization: `Bearer ${accessToken.value}` } }
   )
 
-  if (!response.ok) return null
-  const data = await response.json()
-  return data.files?.[0] || null
+  if (listResponse.ok) {
+    const listData = await listResponse.json()
+    const xlsxFiles = listData.files || []
+    console.log(`[findExcelTemplateFile] Found ${xlsxFiles.length} xlsx file(s) in folder:`, xlsxFiles.map(f => f.name))
+    addLog('info', `Found ${xlsxFiles.length} xlsx file(s) in source folder`)
+    xlsxFiles.forEach(f => addLog('info', `  - "${f.name}"`))
+
+    // Try exact match first
+    let match = xlsxFiles.find(f => f.name === xlsxFilename)
+    if (match) {
+      addLog('info', `Exact match found: "${match.name}"`)
+      return match
+    }
+
+    // Try case-insensitive match
+    match = xlsxFiles.find(f => f.name.toLowerCase() === xlsxFilename.toLowerCase())
+    if (match) {
+      addLog('info', `Case-insensitive match found: "${match.name}"`)
+      return match
+    }
+
+    // Try partial match (contains the filename without extension)
+    const baseFilename = filename.replace(/\.xlsx$/i, '')
+    match = xlsxFiles.find(f => f.name.includes(baseFilename) || baseFilename.includes(f.name.replace(/\.xlsx$/i, '')))
+    if (match) {
+      addLog('info', `Partial match found: "${match.name}"`)
+      return match
+    }
+
+    addLog('warning', `No match for "${xlsxFilename}" among: ${xlsxFiles.map(f => f.name).join(', ') || '(none)'}`)
+  } else {
+    addLog('warning', 'Failed to list xlsx files in folder')
+  }
+
+  return null
 }
 
 async function readMasterSheetData(spreadsheetId) {
