@@ -1083,8 +1083,9 @@ async function updateSheetCells(spreadsheetId, sheetName, cellUpdates) {
 // Process Excel template: duplicate to Processed folder, edit via Sheets API, export back to xlsx
 // Flow: 1) Duplicate original xlsx AS-IS to Processed folder
 //       2) Convert the DUPLICATE (not original!) to temp Google Sheet for editing
-//       3) Edit temp sheet, export back to xlsx, delete temp sheet
+//       3) Edit temp sheet, export back to xlsx
 // This ensures: Original xlsx is NEVER touched
+// NOTE: Temp files are kept for debugging - user can manually delete them
 async function processExcelTemplate(sourceFolderId, masterSheetId, processedFolderId) {
   const filename = excelSettings.value.filename
   const sheetName = excelSettings.value.sheetName
@@ -1100,33 +1101,52 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
   addLog('success', `Found Excel template: ${templateFile.name} (ID: ${templateFile.id})`)
 
   // Read master sheet data first
+  addLog('info', 'Reading data from master sheet...')
   const masterSheetData = await readMasterSheetData(masterSheetId)
   const dataRowCount = masterSheetData.length - 1
 
   if (dataRowCount === 0) {
-    addLog('warning', 'No data in master sheet')
+    addLog('warning', 'No data rows in master sheet (only header)')
     return null
   }
 
   addLog('info', `Read ${dataRowCount} data row(s) from master sheet`)
 
+  // Log the actual data for debugging
+  const dataRows = masterSheetData.slice(1) // Skip header
+  dataRows.forEach((row, idx) => {
+    const [invoiceNumber, date, buyerName, rowNum, description, totalAfterDiscount, taxAndDuties] = row
+    addLog('info', `Row ${idx + 1}: Invoice=${invoiceNumber}, Desc="${description}", Total=${totalAfterDiscount}`)
+  })
+
   // Step 1: DUPLICATE the original xlsx AS-IS to Processed folder
   // This creates an exact copy, preserving all formatting, formulas, macros, etc.
   // The ORIGINAL file is NEVER modified!
-  addLog('info', `Duplicating original xlsx to Processed folder (original will NOT be modified)...`)
-  const duplicatedXlsx = await duplicateXlsxFile(templateFile.id, filename, processedFolderId)
-  addLog('success', `Created duplicate: ${filename}.xlsx (ID: ${duplicatedXlsx.id})`)
+  addLog('info', `Step 1: Duplicating original xlsx to Processed folder...`)
+  let duplicatedXlsx
+  try {
+    duplicatedXlsx = await duplicateXlsxFile(templateFile.id, filename, processedFolderId)
+    addLog('success', `Created duplicate: ${filename}.xlsx (ID: ${duplicatedXlsx.id})`)
+  } catch (dupErr) {
+    addLog('error', `Failed to duplicate xlsx: ${dupErr.message}`)
+    throw dupErr
+  }
 
   // Step 2: Convert the DUPLICATE (not original!) to temp Google Sheet for editing
   // We use Google Sheets format temporarily because Sheets API can update cells and recalculate formulas
-  addLog('info', `Converting duplicate to temporary Google Sheet for editing...`)
+  addLog('info', `Step 2: Converting duplicate to Google Sheet for editing...`)
   const tempSheetName = `_TEMP_${filename}_${Date.now()}`
-  const tempSheet = await convertXlsxToGoogleSheet(duplicatedXlsx.id, tempSheetName, processedFolderId)
-  addLog('success', `Created temporary Google Sheet for editing`)
+  let tempSheet
+  try {
+    tempSheet = await convertXlsxToGoogleSheet(duplicatedXlsx.id, tempSheetName, processedFolderId)
+    addLog('success', `Created Google Sheet: ${tempSheetName} (ID: ${tempSheet.id})`)
+  } catch (convErr) {
+    addLog('error', `Failed to convert to Google Sheet: ${convErr.message}`)
+    throw convErr
+  }
 
   // Build cell updates from master sheet data
   const cellUpdates = []
-  const dataRows = masterSheetData.slice(1) // Skip header
   const startRow = 8 // Excel data starts at row 8
 
   dataRows.forEach((row, index) => {
@@ -1147,36 +1167,46 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
     )
   })
 
-  // Step 3: Update cells in the temporary Google Sheet (formulas auto-recalculate)
-  addLog('info', `Updating ${cellUpdates.length} cells (formulas will auto-recalculate)...`)
-  await updateSheetCells(tempSheet.id, sheetName, cellUpdates)
-  addLog('success', 'Data populated successfully - formulas recalculated')
+  // Step 3: Update cells in the Google Sheet (formulas auto-recalculate)
+  addLog('info', `Step 3: Updating ${cellUpdates.length} cells in sheet "${sheetName}"...`)
+  try {
+    await updateSheetCells(tempSheet.id, sheetName, cellUpdates)
+    addLog('success', 'Data populated successfully - formulas recalculated')
+  } catch (updateErr) {
+    addLog('error', `Failed to update cells: ${updateErr.message}`)
+    throw updateErr
+  }
 
   // Step 4: Export the edited Google Sheet back to xlsx format
-  // This overwrites the duplicate we created in step 1
-  addLog('info', `Exporting to xlsx format: ${filename}.xlsx`)
-  const exportedFile = await exportSheetToXlsx(tempSheet.id, filename, processedFolderId)
-  addLog('success', `Updated xlsx file: ${filename}.xlsx`)
+  addLog('info', `Step 4: Exporting to xlsx format...`)
+  let exportedFile
+  try {
+    exportedFile = await exportSheetToXlsx(tempSheet.id, filename, processedFolderId)
+    addLog('success', `Exported xlsx file: ${filename}.xlsx (ID: ${exportedFile.id})`)
+  } catch (exportErr) {
+    addLog('error', `Failed to export xlsx: ${exportErr.message}`)
+    throw exportErr
+  }
 
   // Step 5: Delete the unedited duplicate xlsx (we have the updated version now)
   try {
-    addLog('info', 'Cleaning up unedited duplicate xlsx...')
+    addLog('info', 'Cleaning up: Deleting unedited duplicate xlsx...')
     await deleteFileFromDrive(duplicatedXlsx.id)
     addLog('success', 'Deleted unedited duplicate')
   } catch (deleteErr) {
-    addLog('warning', 'Failed to delete unedited duplicate', deleteErr.message)
+    addLog('warning', `Could not delete duplicate (ID: ${duplicatedXlsx.id}): ${deleteErr.message}`)
   }
 
-  // Step 6: Delete the temporary Google Sheet (cleanup)
+  // Step 6: Delete the temporary Google Sheet
   try {
-    addLog('info', 'Cleaning up temporary Google Sheet...')
+    addLog('info', 'Cleaning up: Deleting temp Google Sheet...')
     await deleteFileFromDrive(tempSheet.id)
-    addLog('success', 'Deleted temporary Google Sheet')
+    addLog('success', 'Deleted temp Google Sheet')
   } catch (deleteErr) {
-    addLog('warning', 'Failed to delete temporary sheet', deleteErr.message)
+    addLog('warning', `Could not delete temp sheet (ID: ${tempSheet.id}): ${deleteErr.message}`)
   }
 
-  addLog('success', `Excel processing complete - original file unchanged, updated xlsx in Processed folder`)
+  addLog('success', `Excel processing complete! File: ${filename}.xlsx in Processed folder`)
   return exportedFile
 }
 
@@ -1396,7 +1426,10 @@ function extractTableRows(text) {
     }
   }
 
-  if (headerIndex === -1) return rows
+  if (headerIndex === -1) {
+    console.log('[extractTableRows] Table header not found in text')
+    return rows
+  }
 
   // Get the data section (between header and totals)
   let dataSection = text.substring(headerIndex + headerLength)
@@ -1413,6 +1446,7 @@ function extractTableRows(text) {
 
   // Clean up the data section
   dataSection = dataSection.replace(/\s+/g, ' ').trim()
+  console.log('[extractTableRows] Data section:', dataSection.substring(0, 500) + '...')
 
   // Parse rows: In RTL extracted text, each row has the pattern:
   // [grandTotal] [taxAndDuties] [totalAfterDiscount] [discount] [total] [unitPrice] [quantity] [description] [rowNumber]
@@ -1424,7 +1458,9 @@ function extractTableRows(text) {
 
   // Split by row number anchors
   // We look for pattern: description followed by row number, then next row's numbers
-  const rowPattern = /([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+(\d+)\s+(.+?)\s+(\d{1,2})(?=\s+[\d,]{3,}|\s+جمع|\s*$)/g
+  // IMPORTANT: Use GREEDY .+ (not .+?) for description to capture full text like "پلن 2 از خدمات میزبانی وب"
+  // The greedy match will backtrack to find the real row number (followed by large comma-separated numbers)
+  const rowPattern = /([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+(\d+)\s+(.+)\s+(\d{1,2})(?=\s+[\d,]{3,}|\s+جمع|\s*$)/g
 
   let match
   while ((match = rowPattern.exec(dataSection)) !== null) {
@@ -1432,9 +1468,12 @@ function extractTableRows(text) {
 
     // Skip if description contains header labels (means we caught the header by mistake)
     const isHeader = ['شرح', 'ردیف', 'تعداد', 'مبلغ', 'جمع'].some(label => description.includes(label))
-    if (isHeader) continue
+    if (isHeader) {
+      console.log('[extractTableRows] Skipping header row match')
+      continue
+    }
 
-    rows.push({
+    const row = {
       rowNumber: match[9],
       description: description,
       quantity: match[7],
@@ -1444,9 +1483,12 @@ function extractTableRows(text) {
       totalAfterDiscount: match[3],
       taxAndDuties: match[2],
       grandTotal: match[1]
-    })
+    }
+    console.log('[extractTableRows] Extracted row:', JSON.stringify(row))
+    rows.push(row)
   }
 
+  console.log(`[extractTableRows] Total rows extracted: ${rows.length}`)
   return rows
 }
 
