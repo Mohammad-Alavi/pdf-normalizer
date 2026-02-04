@@ -1114,11 +1114,10 @@ async function updateSheetCells(spreadsheetId, sheetName, cellUpdates) {
 }
 
 // Process Excel template: duplicate to Processed folder, edit via Sheets API, export back to xlsx
-// Flow: 1) Duplicate original xlsx AS-IS to Processed folder
+// Flow: 1) Duplicate original xlsx AS-IS to Processed folder with TEMP name
 //       2) Convert the DUPLICATE (not original!) to temp Google Sheet for editing
-//       3) Edit temp sheet, export back to xlsx
-// This ensures: Original xlsx is NEVER touched
-// NOTE: Temp files are kept for debugging - user can manually delete them
+//       3) Edit temp sheet, export back to xlsx with FINAL name
+// This ensures: Original xlsx is NEVER touched, and final file has correct name
 async function processExcelTemplate(sourceFolderId, masterSheetId, processedFolderId) {
   const filename = excelSettings.value.filename
   const sheetName = excelSettings.value.sheetName
@@ -1152,23 +1151,24 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
     addLog('info', `Row ${idx + 1}: Invoice=${invoiceNumber}, Desc="${description}", Total=${totalAfterDiscount}`)
   })
 
-  // Step 1: DUPLICATE the original xlsx AS-IS to Processed folder
-  // This creates an exact copy, preserving all formatting, formulas, macros, etc.
+  // Step 1: DUPLICATE the original xlsx to Processed folder with a TEMP name
+  // Use temp name to avoid conflict when we upload the final edited version
   // The ORIGINAL file is NEVER modified!
-  addLog('info', `Step 1: Duplicating original xlsx to Processed folder...`)
+  const tempDuplicateName = `_TEMP_DUPLICATE_${filename}_${Date.now()}`
+  addLog('info', `Step 1: Duplicating original xlsx to Processed folder (temp name)...`)
   let duplicatedXlsx
   try {
-    duplicatedXlsx = await duplicateXlsxFile(templateFile.id, filename, processedFolderId)
-    addLog('success', `Created duplicate: ${filename}.xlsx (ID: ${duplicatedXlsx.id})`)
+    duplicatedXlsx = await duplicateXlsxFile(templateFile.id, tempDuplicateName, processedFolderId)
+    addLog('success', `Created temp duplicate: ${tempDuplicateName}.xlsx (ID: ${duplicatedXlsx.id})`)
   } catch (dupErr) {
     addLog('error', `Failed to duplicate xlsx: ${dupErr.message}`)
     throw dupErr
   }
 
-  // Step 2: Convert the DUPLICATE (not original!) to temp Google Sheet for editing
+  // Step 2: Convert the temp DUPLICATE to temp Google Sheet for editing
   // We use Google Sheets format temporarily because Sheets API can update cells and recalculate formulas
-  addLog('info', `Step 2: Converting duplicate to Google Sheet for editing...`)
-  const tempSheetName = `_TEMP_${filename}_${Date.now()}`
+  addLog('info', `Step 2: Converting temp duplicate to Google Sheet for editing...`)
+  const tempSheetName = `_TEMP_SHEET_${filename}_${Date.now()}`
   let tempSheet
   try {
     tempSheet = await convertXlsxToGoogleSheet(duplicatedXlsx.id, tempSheetName, processedFolderId)
@@ -1221,11 +1221,11 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
     throw exportErr
   }
 
-  // Step 5: Delete the unedited duplicate xlsx (we have the updated version now)
+  // Step 5: Delete the temp duplicate xlsx (we now have the final edited version with the correct name)
   try {
-    addLog('info', 'Cleaning up: Deleting unedited duplicate xlsx...')
+    addLog('info', 'Cleaning up: Deleting temp duplicate xlsx...')
     await deleteFileFromDrive(duplicatedXlsx.id)
-    addLog('success', 'Deleted unedited duplicate')
+    addLog('success', 'Deleted temp duplicate')
   } catch (deleteErr) {
     addLog('warning', `Could not delete duplicate (ID: ${duplicatedXlsx.id}): ${deleteErr.message}`)
   }
