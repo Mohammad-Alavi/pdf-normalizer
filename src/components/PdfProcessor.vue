@@ -1284,65 +1284,211 @@ function parseFilename(filename) {
   return { invoiceNumber: '', buyerName: '' }
 }
 
+// LABEL-BASED EXTRACTION APPROACH
+// We find values by their position relative to known constant labels (titles)
+// Labels are CONSTANT (never change), values are VARIABLE (always change)
+// We NEVER search for values directly - only search for labels, then extract what's between them
+
+// Known constant labels in the invoice (these never change)
+const INVOICE_LABELS = {
+  // Header labels
+  invoiceNumber: 'شماره',
+  date: 'تاریخ',
+  buyerName: 'نام شخص حقیقی / حقوقی',
+
+  // Table column headers (RTL order: right to left)
+  rowNumber: 'ردیف',
+  description: 'شرح کالا یا خدمات',
+  quantity: 'تعداد',
+  unitPrice: 'مبلغ واحد',
+  total: 'مبلغ کل',
+  discount: 'تخفیف',
+  totalAfterDiscount: 'مبلغ کل پس از تخفیف',
+  taxAndDuties: 'جمع مالیات و عوارض',
+  grandTotal: 'جمع مبلغ کل بعلاوه جمع مالیات و عوارض',
+
+  // Section markers
+  tableHeader: 'تعداد شرح کالا یا خدمات ردیف',
+  totalsSection: 'جمع کل'
+}
+
+// Find the value that appears immediately after a label
+function findValueAfterLabel(text, label, stopLabels = []) {
+  const labelIndex = text.indexOf(label)
+  if (labelIndex === -1) return null
+
+  // Get text after the label
+  let afterLabel = text.substring(labelIndex + label.length)
+
+  // Find where to stop (at the next known label or end)
+  let stopIndex = afterLabel.length
+  for (const stopLabel of stopLabels) {
+    const idx = afterLabel.indexOf(stopLabel)
+    if (idx !== -1 && idx < stopIndex) {
+      stopIndex = idx
+    }
+  }
+
+  // Extract and clean the value
+  const value = afterLabel.substring(0, stopIndex).replace(/^[:\s]+/, '').trim()
+  return value || null
+}
+
+// Find text between two labels
+function findTextBetweenLabels(text, startLabel, endLabel) {
+  const startIndex = text.indexOf(startLabel)
+  if (startIndex === -1) return null
+
+  const afterStart = text.substring(startIndex + startLabel.length)
+  const endIndex = afterStart.indexOf(endLabel)
+
+  if (endIndex === -1) return afterStart.trim()
+  return afterStart.substring(0, endIndex).trim()
+}
+
+// Extract table rows using label-based positioning
+// The table has a header row with known labels, then data rows follow
+function extractTableRows(text) {
+  const rows = []
+
+  // Find the table header (this marks the start of the table)
+  const headerVariants = [
+    'تعداد شرح کالا یا خدمات ردیف',
+    'تعداد  شرح کالا یا خدمات  ردیف'
+  ]
+
+  let headerIndex = -1
+  let headerLength = 0
+  for (const header of headerVariants) {
+    const idx = text.indexOf(header)
+    if (idx !== -1) {
+      headerIndex = idx
+      headerLength = header.length
+      break
+    }
+  }
+
+  // Also try with flexible whitespace
+  if (headerIndex === -1) {
+    const match = text.match(/تعداد\s+شرح کالا یا خدمات\s+ردیف/)
+    if (match) {
+      headerIndex = text.indexOf(match[0])
+      headerLength = match[0].length
+    }
+  }
+
+  if (headerIndex === -1) return rows
+
+  // Get the data section (between header and totals)
+  let dataSection = text.substring(headerIndex + headerLength)
+
+  // Find where data ends (at totals section)
+  const totalsMarkers = ['جمع کل', 'جمع  کل']
+  for (const marker of totalsMarkers) {
+    const idx = dataSection.indexOf(marker)
+    if (idx !== -1) {
+      dataSection = dataSection.substring(0, idx)
+      break
+    }
+  }
+
+  // Clean up the data section
+  dataSection = dataSection.replace(/\s+/g, ' ').trim()
+
+  // Parse rows: In RTL extracted text, each row has the pattern:
+  // [grandTotal] [taxAndDuties] [totalAfterDiscount] [discount] [total] [unitPrice] [quantity] [description] [rowNumber]
+  // Row numbers are simple 1-2 digit integers (1, 2, 3...)
+  // All numeric values except row number have commas (like 1,234,567)
+
+  // Strategy: Find row numbers (1, 2, 3...) as anchors, then extract values between them
+  // Row number pattern: standalone 1-2 digit number that marks the end of a row
+
+  // Split by row number anchors
+  // We look for pattern: description followed by row number, then next row's numbers
+  const rowPattern = /([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+(\d+)\s+(.+?)\s+(\d{1,2})(?=\s+[\d,]{3,}|\s+جمع|\s*$)/g
+
+  let match
+  while ((match = rowPattern.exec(dataSection)) !== null) {
+    const description = match[8].trim()
+
+    // Skip if description contains header labels (means we caught the header by mistake)
+    const isHeader = ['شرح', 'ردیف', 'تعداد', 'مبلغ', 'جمع'].some(label => description.includes(label))
+    if (isHeader) continue
+
+    rows.push({
+      rowNumber: match[9],
+      description: description,
+      quantity: match[7],
+      unitPrice: match[6],
+      total: match[5],
+      discount: match[4],
+      totalAfterDiscount: match[3],
+      taxAndDuties: match[2],
+      grandTotal: match[1]
+    })
+  }
+
+  return rows
+}
+
 function parseInvoiceText(text, filename = '') {
   if (!text) return null
   const normalizedText = normalizeArabicText(text)
   const result = { invoiceNumber: '', date: '', buyerName: '', items: [], rawText: text }
 
-  // Extract from filename first
+  // PRIORITY 1: Extract from filename (most reliable - uses known structure)
   const filenameData = parseFilename(filename)
   if (filenameData.invoiceNumber) result.invoiceNumber = filenameData.invoiceNumber
   if (filenameData.buyerName) result.buyerName = filenameData.buyerName
 
-  // Fallback to text extraction
+  // PRIORITY 2: Extract using label-based approach (find values after known labels)
+
+  // Invoice number - find value after the "شماره" label
   if (!result.invoiceNumber) {
-    const match = normalizedText.match(/شماره[:\s]*(\d+)/)
-    if (match) result.invoiceNumber = match[1]
+    const value = findValueAfterLabel(normalizedText, INVOICE_LABELS.invoiceNumber, ['تاریخ', 'نام', 'شناسه'])
+    if (value) {
+      // Extract just the numeric part
+      const numMatch = value.match(/\d+/)
+      if (numMatch) result.invoiceNumber = numMatch[0]
+    }
   }
 
-  const dateMatch = normalizedText.match(/(\d{4}\/\d{2}\/\d{2})\s*:?\s*تاریخ|تاریخ\s*:?\s*(\d{4}\/\d{2}\/\d{2})/)
-  if (dateMatch) result.date = dateMatch[1] || dateMatch[2]
+  // Date - find value near the "تاریخ" label
+  // Date format is always YYYY/MM/DD - we find it near the تاریخ label
+  const dateLabel = INVOICE_LABELS.date
+  const dateLabelIndex = normalizedText.indexOf(dateLabel)
+  if (dateLabelIndex !== -1) {
+    // Look for date pattern within 50 chars before or after the label
+    const searchArea = normalizedText.substring(
+      Math.max(0, dateLabelIndex - 50),
+      Math.min(normalizedText.length, dateLabelIndex + 50)
+    )
+    const dateMatch = searchArea.match(/\d{4}\/\d{2}\/\d{2}/)
+    if (dateMatch) result.date = dateMatch[0]
+  }
 
+  // Buyer name - find value after the second occurrence of the buyer name label
+  // (First occurrence is the seller, second is the buyer)
   if (!result.buyerName) {
-    const label = 'نام شخص حقیقی / حقوقی'
+    const label = INVOICE_LABELS.buyerName
     const firstIndex = normalizedText.indexOf(label)
     if (firstIndex !== -1) {
       const secondIndex = normalizedText.indexOf(label, firstIndex + label.length)
       if (secondIndex !== -1) {
-        const match = normalizedText.substring(secondIndex + label.length).match(/^[:\s]*([^\n:]+)/)
-        if (match?.[1]?.length > 2 && !match[1].includes('شناسه')) result.buyerName = match[1].trim()
+        const afterSecond = normalizedText.substring(secondIndex + label.length)
+        // Extract value until next known label
+        const value = findValueAfterLabel(
+          label + afterSecond, // prepend label so findValueAfterLabel works
+          label,
+          ['شناسه', 'کد پستی', 'شماره', 'تلفن', 'آدرس']
+        )
+        if (value && value.length > 2) result.buyerName = value
       }
     }
   }
 
-  // Parse table rows
-  const headerMatch = normalizedText.match(/تعداد\s+شرح کالا یا خدمات\s+ردیف/)
-  if (headerMatch) {
-    let dataSection = normalizedText.substring(normalizedText.indexOf(headerMatch[0]) + headerMatch[0].length)
-    const totalsIndex = dataSection.indexOf('جمع کل')
-    if (totalsIndex !== -1) dataSection = dataSection.substring(0, totalsIndex)
-
-    // Pattern for table rows - description (.+?) can contain numbers like "پلن 2 از خدمات میزبانی وب"
-    // The lookahead ensures row number is followed by next row's total ([\d,]{3,}) or "جمع" (totals section)
-    const rowPattern = /([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+(\d+)\s+(.+?)\s+(\d{1,2})(?=\s+[\d,]{3,}|\s+جمع|\s*$)/g
-    let match
-    while ((match = rowPattern.exec(dataSection)) !== null) {
-      const description = match[8].trim()
-      if (!description.includes('شرح') && !description.includes('ردیف') && !description.includes('جمع')) {
-        result.items.push({
-          rowNumber: match[9],
-          description,
-          quantity: match[7],
-          unitPrice: match[6],
-          total: match[5],
-          discount: match[4],
-          totalAfterDiscount: match[3],
-          taxAndDuties: match[2],
-          grandTotal: match[1]
-        })
-      }
-    }
-  }
+  // Extract table rows using label-based approach
+  result.items = extractTableRows(normalizedText)
 
   return result
 }
