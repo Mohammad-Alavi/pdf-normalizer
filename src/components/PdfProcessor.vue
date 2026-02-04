@@ -997,8 +997,29 @@ async function readMasterSheetData(spreadsheetId) {
   return data.values || []
 }
 
-// Copy xlsx file and convert to Google Sheets format (equivalent to "Save as Google Sheets" in UI)
-async function copyAndConvertToGoogleSheet(fileId, newName, destinationFolderId) {
+// Duplicate xlsx file AS-IS to destination folder (keeps xlsx format, does NOT convert)
+async function duplicateXlsxFile(fileId, newName, destinationFolderId) {
+  const xlsxName = newName.endsWith('.xlsx') ? newName : `${newName}.xlsx`
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/copy?supportsAllDrives=true`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken.value}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: xlsxName,
+      parents: [destinationFolderId]
+      // No mimeType specified = keeps original xlsx format
+    })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(`Failed to duplicate xlsx file: ${errorData.error?.message || 'Unknown error'}`)
+  }
+
+  return await response.json()
+}
+
+// Convert an xlsx file to Google Sheets format (for API editing)
+async function convertXlsxToGoogleSheet(fileId, newName, destinationFolderId) {
   const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/copy?supportsAllDrives=true`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken.value}`, 'Content-Type': 'application/json' },
@@ -1012,10 +1033,30 @@ async function copyAndConvertToGoogleSheet(fileId, newName, destinationFolderId)
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(`Failed to copy and convert file: ${errorData.error?.message || 'Unknown error'}`)
+    throw new Error(`Failed to convert to Google Sheet: ${errorData.error?.message || 'Unknown error'}`)
   }
 
   return await response.json()
+}
+
+// Export a Google Sheet back to xlsx format
+async function exportSheetToXlsx(sheetId, filename, destinationFolderId) {
+  // Download as xlsx
+  const xlsxName = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`
+  const exportResponse = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${sheetId}/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
+    { headers: { Authorization: `Bearer ${accessToken.value}` } }
+  )
+
+  if (!exportResponse.ok) {
+    const errorData = await exportResponse.json().catch(() => ({}))
+    throw new Error(`Failed to export sheet: ${errorData.error?.message || 'Unknown error'}`)
+  }
+
+  const xlsxBlob = await exportResponse.blob()
+
+  // Upload the xlsx to destination folder
+  return await uploadToDrive(xlsxBlob, xlsxName, destinationFolderId, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 }
 
 // Update cells in Google Sheets (triggers formula recalculation automatically)
@@ -1039,7 +1080,8 @@ async function updateSheetCells(spreadsheetId, sheetName, cellUpdates) {
   return await response.json()
 }
 
-// Process Excel template: copy as Google Sheet and populate with data
+// Process Excel template: duplicate to Processed folder, edit via Sheets API, export back to xlsx
+// This ensures: 1) Original xlsx is NEVER modified, 2) Output is xlsx format with formulas recalculated
 async function processExcelTemplate(sourceFolderId, masterSheetId, processedFolderId) {
   const filename = excelSettings.value.filename
   const sheetName = excelSettings.value.sheetName
@@ -1052,7 +1094,8 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
     return null
   }
 
-  addLog('success', `Found Excel template: ${templateFile.name}`)
+  addLog('success', `Found Excel template: ${templateFile.name} (ID: ${templateFile.id})`)
+  addLog('info', `Original file will NOT be modified - creating a copy...`)
 
   // Read master sheet data
   const masterSheetData = await readMasterSheetData(masterSheetId)
@@ -1065,11 +1108,12 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
 
   addLog('info', `Read ${dataRowCount} data row(s) from master sheet`)
 
-  // Copy xlsx and convert to Google Sheets format (this enables Sheets API updates and formula recalculation)
-  // Keep original filename
-  addLog('info', `Copying Excel template as Google Sheet...`)
-  const copiedFile = await copyAndConvertToGoogleSheet(templateFile.id, filename, processedFolderId)
-  addLog('success', `Created Google Sheet: ${filename}`)
+  // Step 1: Create a TEMPORARY Google Sheets version from original xlsx for editing
+  // We use Google Sheets format temporarily because Sheets API can update cells and recalculate formulas
+  addLog('info', `Creating temporary Google Sheet for editing...`)
+  const tempSheetName = `_TEMP_${filename}_${Date.now()}`
+  const tempSheet = await convertXlsxToGoogleSheet(templateFile.id, tempSheetName, processedFolderId)
+  addLog('success', `Created temporary Google Sheet for editing`)
 
   // Build cell updates from master sheet data
   const cellUpdates = []
@@ -1094,11 +1138,27 @@ async function processExcelTemplate(sourceFolderId, masterSheetId, processedFold
     )
   })
 
+  // Step 2: Update cells in the temporary Google Sheet (formulas auto-recalculate)
   addLog('info', `Updating ${cellUpdates.length} cells (formulas will auto-recalculate)...`)
-  await updateSheetCells(copiedFile.id, sheetName, cellUpdates)
+  await updateSheetCells(tempSheet.id, sheetName, cellUpdates)
   addLog('success', 'Data populated successfully - formulas recalculated')
 
-  return copiedFile
+  // Step 3: Export the edited Google Sheet back to xlsx format
+  addLog('info', `Exporting to xlsx format: ${filename}.xlsx`)
+  const exportedFile = await exportSheetToXlsx(tempSheet.id, filename, processedFolderId)
+  addLog('success', `Created xlsx file: ${filename}.xlsx`)
+
+  // Step 4: Delete the temporary Google Sheet (cleanup)
+  try {
+    addLog('info', 'Cleaning up temporary Google Sheet...')
+    await deleteFileFromDrive(tempSheet.id)
+    addLog('success', 'Deleted temporary Google Sheet')
+  } catch (deleteErr) {
+    addLog('warning', 'Failed to delete temporary sheet', deleteErr.message)
+  }
+
+  addLog('success', `Excel processing complete - original file unchanged, new xlsx in Processed folder`)
+  return exportedFile
 }
 
 async function downloadFile(fileId) {
@@ -1262,7 +1322,9 @@ function parseInvoiceText(text, filename = '') {
     const totalsIndex = dataSection.indexOf('جمع کل')
     if (totalsIndex !== -1) dataSection = dataSection.substring(0, totalsIndex)
 
-    const rowPattern = /([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+(\d+)\s+([^\d]+?)\s+(\d+)(?=\s|$)/g
+    // Pattern for table rows - description (.+?) can contain numbers like "پلن 2 از خدمات میزبانی وب"
+    // The lookahead ensures row number is followed by next row's total ([\d,]{3,}) or "جمع" (totals section)
+    const rowPattern = /([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+(\d+)\s+(.+?)\s+(\d{1,2})(?=\s+[\d,]{3,}|\s+جمع|\s*$)/g
     let match
     while ((match = rowPattern.exec(dataSection)) !== null) {
       const description = match[8].trim()
