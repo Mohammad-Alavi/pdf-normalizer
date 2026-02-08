@@ -1,3 +1,4 @@
+
 <template>
   <v-card class="mx-auto" max-width="900">
     <v-card-title class="text-h5 pa-6 pb-2 d-flex align-center">
@@ -699,7 +700,7 @@ async function processFiles() {
 
     // Fetch PDF files from source folder
     addLog('info', 'Fetching PDF files from Google Drive...')
-    const pdfFiles = await fetchDriveFiles(folderId)
+    const pdfFiles = (await fetchDriveFiles(folderId)).reverse()
     addLog('info', `Found ${pdfFiles.length} PDF file(s) to process`)
 
     if (pdfFiles.length === 0) {
@@ -812,7 +813,7 @@ async function processFiles() {
 async function fetchDriveFiles(folderId) {
   const query = `'${folderId}' in parents and mimeType='application/pdf' and trashed=false`
   const response = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,size)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,size)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     { headers: { Authorization: `Bearer ${accessToken.value}` } }
   )
 
